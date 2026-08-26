@@ -2040,3 +2040,324 @@ git commit -m "$(printf '%s\n' '시뮬레이션: 호스트만 돌리는 유일�
 ```
 
 ---
+### Task 8: 스냅샷 직렬화
+
+호스트가 10Hz로 올리는 상태 꾸러미. **전송량이 이 파일에서 결정된다.**
+
+키를 한 글자로 줄이고 좌표를 정수로 반올림하는 게 인색해 보이지만, 이건
+8명이 4분간 주고받는 양에 그대로 곱해진다. 소수점 좌표는 눈에 안 보이면서
+글자 수만 두 배로 만든다.
+
+**Files:**
+- Create: `js/snap.js`
+- Create: `test/snap.test.js`
+
+**Interfaces:**
+- Consumes: `window.Sim` (Task 7), `window.Stations` (Task 6)
+- Produces:
+  - `window.Snap.pack(state)` → `{ t, d, p, m }`
+    - `t`: 틱 번호 (정수). 호스트가 살아 있는지 판단하는 근거이기도 하다
+    - `d`: 납품 개수
+    - `p`: `{<pid>: [x, y, dir, holdIdx]}` — 좌표는 정수, `holdIdx`는 아래 `ITEMS` 색인 (`-1`=빈손)
+    - `m`: `{<id>: [itemIdx, prog]}` — `prog`는 소수 둘째 자리까지
+  - `window.Snap.unpack(packed, map)` → Sim 이 쓰는 모양의 상태 (`map`, `goal` 은 인자로 받아 채운다)
+  - `window.Snap.ITEMS` → `['ref','high','low','uv','tex','rig','done','burnt']`
+  - `window.Snap.bytes(packed)` → JSON 으로 만들었을 때 길이 (예산 실측용)
+
+- [ ] **Step 1: 실패하는 테스트를 쓴다**
+
+`test/snap.test.js`:
+
+```js
+'use strict';
+const { test } = require('node:test');
+const assert = require('node:assert');
+const { load } = require('../testlib/load');
+
+function all() { return load(['world', 'stations', 'sim', 'snap']); }
+
+function bench(w) {
+  const T = w.World.TILE;
+  return {
+    cols: 10, rows: 5,
+    grid: ('##########' + '#SS....SS#' + '#........#' + '#SS....SS#' + '##########').split(''),
+    spawns: [{ x: 5 * T, y: 2 * T }, { x: 4 * T, y: 2 * T }],
+    stations: [
+      { id: 'r', type: 'ref',    cx: 1 * T + T / 2, cy: 1 * T + T / 2 },
+      { id: 'm', type: 'model',  cx: 7 * T + T / 2, cy: 1 * T + T / 2 },
+      { id: 's', type: 'ship',   cx: 7 * T + T / 2, cy: 3 * T + T / 2 }
+    ]
+  };
+}
+
+test('ITEMS 에 모든 물건 상태가 있다', () => {
+  const I = all().Snap.ITEMS;
+  for (const s of ['ref', 'high', 'low', 'uv', 'tex', 'rig', 'done', 'burnt']) {
+    assert.ok(I.indexOf(s) >= 0, s + ' 가 빠졌다');
+  }
+  assert.strictEqual(new Set(I).size, I.length, '중복이 있다');
+});
+
+test('pack 은 좌표를 정수로 만든다', () => {
+  const w = all(), S = w.Sim, P = w.Snap;
+  let st = S.create(bench(w), ['a']);
+  st.players.a.x = 123.456;
+  st.players.a.y = 78.912;
+  const k = P.pack(st);
+  assert.strictEqual(k.p.a[0], 123);
+  assert.strictEqual(k.p.a[1], 79);
+});
+
+test('pack 은 빈손을 -1 로 적는다', () => {
+  const w = all(), P = w.Snap;
+  let st = w.Sim.create(bench(w), ['a']);
+  assert.strictEqual(P.pack(st).p.a[3], -1);
+});
+
+test('pack 은 들고 있는 물건을 색인으로 적는다', () => {
+  const w = all(), P = w.Snap;
+  let st = w.Sim.create(bench(w), ['a']);
+  st.players.a.hold = 'high';
+  assert.strictEqual(P.pack(st).p.a[3], P.ITEMS.indexOf('high'));
+});
+
+test('pack 은 t 를 정수 틱으로 적는다', () => {
+  const w = all(), P = w.Snap;
+  let st = w.Sim.create(bench(w), ['a']);
+  st.t = 12.7;
+  const k = P.pack(st);
+  assert.strictEqual(typeof k.t, 'number');
+  assert.strictEqual(k.t, Math.round(k.t), 't 는 정수여야 한다');
+});
+
+test('pack → unpack 이 뜻을 지킨다', () => {
+  const w = all(), S = w.Sim, P = w.Snap;
+  const map = bench(w);
+  let st = S.create(map, ['a', 'b']);
+  st.players.a.x = 200; st.players.a.y = 100; st.players.a.dir = 2; st.players.a.hold = 'ref';
+  st.players.b.x = 300; st.players.b.y = 150; st.players.b.dir = 1;
+  st.machines.m = { id: 'm', type: 'model', item: 'ref', prog: 3 };
+  st.done = 2;
+
+  const back = P.unpack(P.pack(st), map);
+  assert.strictEqual(back.players.a.x, 200);
+  assert.strictEqual(back.players.a.dir, 2);
+  assert.strictEqual(back.players.a.hold, 'ref');
+  assert.strictEqual(back.players.b.hold, null);
+  assert.strictEqual(back.machines.m.item, 'ref');
+  assert.strictEqual(back.machines.m.prog, 3);
+  assert.strictEqual(back.done, 2);
+  assert.strictEqual(back.map, map);
+});
+
+test('unpack 은 빈 기계를 null 로 되돌린다', () => {
+  const w = all(), P = w.Snap;
+  const map = bench(w);
+  const st = w.Sim.create(map, ['a']);
+  const back = P.unpack(P.pack(st), map);
+  assert.strictEqual(back.machines.m.item, null);
+});
+
+test('unpack 은 맵에 없는 기계를 무시한다', () => {
+  const w = all(), P = w.Snap;
+  const map = bench(w);
+  const k = P.pack(w.Sim.create(map, ['a']));
+  k.m.유령 = [0, 0];
+  const back = P.unpack(k, map);
+  assert.strictEqual(back.machines.유령, undefined, '맵에 없는 기계가 생기면 안 된다');
+});
+
+test('unpack 은 망가진 꾸러미에도 안 죽는다', () => {
+  const w = all(), P = w.Snap;
+  const map = bench(w);
+  for (const bad of [null, undefined, {}, { t: 1 }, { p: null, m: null }, 'x', 5]) {
+    const back = P.unpack(bad, map);
+    assert.ok(back && back.players && back.machines, '꾸러미: ' + JSON.stringify(bad));
+  }
+});
+
+test('prog 는 소수 둘째 자리까지만 실린다', () => {
+  const w = all(), P = w.Snap;
+  const map = bench(w);
+  let st = w.Sim.create(map, ['a']);
+  st.machines.m = { id: 'm', type: 'model', item: 'ref', prog: 0.123456789 };
+  const k = P.pack(st);
+  assert.strictEqual(k.m.m[1], 0.12);
+});
+
+test('8명 스냅샷이 예산 안에 든다', () => {
+  const w = all(), S = w.Sim, P = w.Snap;
+  const map = w.World.STAGE1;
+  const pids = ['p1','p2','p3','p4','p5','p6','p7','p8'];
+  let st = S.create(map, pids);
+  for (const id of pids) {
+    st.players[id].x = 1234.5678;
+    st.players[id].y = 678.1234;
+    st.players[id].hold = 'high';
+  }
+  for (const id in st.machines) st.machines[id] = { id, type: st.machines[id].type, item: 'ref', prog: 0.55 };
+
+  const n = P.bytes(P.pack(st));
+  console.log('   8명 스냅샷 크기:', n, 'bytes');
+  assert.ok(n < 900, '스냅샷이 900바이트를 넘으면 예산(13MB/판)을 넘긴다: ' + n);
+});
+```
+
+- [ ] **Step 2: 실패를 확인한다**
+
+Run: `cd /c/Users/NAU/Desktop/Overworked && node --test test/snap.test.js`
+Expected: FAIL — `ENOENT ... js/snap.js`
+
+- [ ] **Step 3: 구현**
+
+`js/snap.js`:
+
+```js
+/* ============================================================
+   오버워크드 — 스냅샷 직렬화
+
+   호스트가 10Hz 로 올리는 상태 꾸러미. 전송량이 이 파일에서 결정된다.
+
+   키를 한 글자로 줄이고 좌표를 반올림하는 게 인색해 보이지만, 이 크기는
+   8명 × 10Hz × 240초에 그대로 곱해진다. 소수점 좌표는 눈에 보이지도 않으면서
+   글자 수만 두 배로 만든다. 물건 이름도 색인으로 바꾼다 — 'burnt' 다섯 글자를
+   기계마다 매초 열 번씩 보낼 이유가 없다.
+
+   ── 왜 항상 전체를 보내는가 ────────────────────────────
+   푸시가 12번에 한 번쯤 누락된다. 델타를 보내면 그 한 번을 놓치는 순간
+   영원히 어긋난 채로 남는다. 전체를 보내면 다음 프레임이 알아서 고쳐 준다.
+
+   ── t 가 두 가지 일을 한다 ──────────────────────────────
+   화면 보간의 기준이면서, 호스트가 살아 있는지 판단하는 근거이기도 하다.
+   이 값이 3초간 안 늘면 호스트가 죽은 것으로 본다(Task 9).
+   ============================================================ */
+(function (global) {
+  'use strict';
+
+  /* 색인 순서를 바꾸면 예전 꾸러미를 잘못 읽는다. 뒤에만 붙일 것. */
+  var ITEMS = ['ref', 'high', 'low', 'uv', 'tex', 'rig', 'done', 'burnt'];
+
+  function itemIdx(s) {
+    if (s === null || s === undefined) return -1;
+    var i = ITEMS.indexOf(s);
+    return i;                                     // 모르는 값도 -1 로 떨어진다
+  }
+
+  function itemOf(i) {
+    return (i >= 0 && i < ITEMS.length) ? ITEMS[i] : null;
+  }
+
+  function round2(v) {
+    return Math.round((v || 0) * 100) / 100;
+  }
+
+  function pack(state) {
+    var p = {}, m = {}, k;
+
+    for (k in state.players) {
+      if (!Object.prototype.hasOwnProperty.call(state.players, k)) continue;
+      var pl = state.players[k];
+      p[k] = [Math.round(pl.x), Math.round(pl.y), pl.dir | 0, itemIdx(pl.hold)];
+    }
+
+    for (k in state.machines) {
+      if (!Object.prototype.hasOwnProperty.call(state.machines, k)) continue;
+      var mc = state.machines[k];
+      m[k] = [itemIdx(mc.item), round2(mc.prog)];
+    }
+
+    return {
+      t: Math.round(state.t * 10),                // 0.1초 단위 틱. 정수라 짧다.
+      d: state.done | 0,
+      p: p,
+      m: m
+    };
+  }
+
+  function unpack(packed, map) {
+    var out = {
+      t: 0, map: map, players: {}, machines: {}, done: 0,
+      goal: (global.Stations && global.Stations.STAGE1_GOAL) || { need: 'low', count: 6 }
+    };
+    if (!packed || typeof packed !== 'object') return out;
+
+    out.t = (packed.t || 0) / 10;
+    out.done = packed.d | 0;
+
+    var p = packed.p, k;
+    if (p && typeof p === 'object') {
+      for (k in p) {
+        if (!Object.prototype.hasOwnProperty.call(p, k)) continue;
+        var a = p[k];
+        if (!a || a.length < 4) continue;
+        out.players[k] = {
+          x: a[0], y: a[1], dir: a[2] | 0, hold: itemOf(a[3]), tap: 0, seq: 0
+        };
+      }
+    }
+
+    /* 기계는 맵을 기준으로 세운다. 꾸러미에 없는 기계는 빈 채로 두고,
+       맵에 없는 기계는 버린다 — 스테이지가 바뀌는 순간의 엇갈림을 여기서 흡수한다. */
+    var st = (map && map.stations) || [];
+    for (var i = 0; i < st.length; i++) {
+      var s = st[i];
+      var row = (packed.m && packed.m[s.id]) || null;
+      out.machines[s.id] = {
+        id: s.id, type: s.type,
+        item: row ? itemOf(row[0]) : null,
+        prog: row ? (row[1] || 0) : 0
+      };
+    }
+
+    return out;
+  }
+
+  function bytes(packed) {
+    return JSON.stringify(packed).length;
+  }
+
+  global.Snap = {
+    ITEMS: ITEMS,
+    pack: pack,
+    unpack: unpack,
+    bytes: bytes
+  };
+})(window);
+```
+
+- [ ] **Step 4: 통과를 확인한다**
+
+Run: `cd /c/Users/NAU/Desktop/Overworked && node --test test/snap.test.js`
+Expected: PASS — `11 pass, 0 fail`. 출력에 실제 스냅샷 크기가 찍힌다.
+
+- [ ] **Step 5: 실제 전송량을 계산해서 기록한다**
+
+```bash
+cd /c/Users/NAU/Desktop/Overworked && node -e "
+const {load}=require('./testlib/load');
+const w=load(['world','stations','sim','snap']);
+const pids=[1,2,3,4,5,6,7,8].map(i=>'p'+i);
+let st=w.Sim.create(w.World.STAGE1,pids);
+for(const id of pids){ st.players[id].x=1234.5; st.players[id].y=678.9; st.players[id].hold='high'; }
+for(const id in st.machines) st.machines[id]={id,type:st.machines[id].type,item:'ref',prog:0.55};
+const n=w.Snap.bytes(w.Snap.pack(st));
+const HZ=10, SEC=240, N=8;
+console.log('스냅샷', n, 'bytes');
+console.log('호스트 업로드', (n*HZ/1024).toFixed(1), 'KB/s');
+console.log('한 판(4분) 전체 다운로드', (n*HZ*SEC*N/1024/1024).toFixed(1), 'MB');
+console.log('월 10GB 로 가능한 판 수', Math.floor(10*1024*1024*1024/(n*HZ*SEC*N)));
+"
+```
+
+이 숫자를 스펙 3.5 절의 계산값과 대조해서, 차이가 크면 스펙을 실측값으로 고친다.
+판당 20MB 를 넘으면 스냅샷 주기를 10Hz → 7Hz 로 낮춘다.
+
+- [ ] **Step 6: 커밋**
+
+```bash
+cd /c/Users/NAU/Desktop/Overworked
+git add js/snap.js test/snap.test.js
+git commit -m "$(printf '%s\n' '스냅샷: 전송량이 여기서 결정된다' '' '키를 한 글자로 줄이고 좌표를 정수로 반올림했다. 인색해 보이지만 이 크기는' '8명 x 10Hz x 240초에 그대로 곱해진다. 소수점 좌표는 눈에 보이지도 않으면서' '글자 수만 두 배로 만든다.' '' '항상 전체를 보낸다. 푸시가 12번에 한 번쯤 누락되는데, 델타면 그 한 번을' '놓치는 순간 영원히 어긋난 채로 남는다. 전체면 다음 프레임이 고쳐 준다.' '' 'unpack 은 맵을 기준으로 기계를 세운다. 꾸러미에 없으면 빈 채로, 맵에 없으면' '버린다 — 스테이지가 바뀌는 순간의 엇갈림을 여기서 흡수한다.' '' 'Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
+```
+
+---
