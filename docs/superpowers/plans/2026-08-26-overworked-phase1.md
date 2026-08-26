@@ -1511,3 +1511,532 @@ git commit -m "$(printf '%s\n' '공정 상태 기계: 게임 규칙을 표 하�
 ```
 
 ---
+### Task 7: 시뮬레이션 — 유일한 권위
+
+호스트만 이걸 돌린다. 입력을 받아 60Hz로 세계를 굴린다.
+**이 파일은 네트워크도, 캔버스도, DOM도 모른다.** 순수 함수 덩어리라서
+브라우저 없이 Node 로 전부 검증한다 — 8명이 붙은 뒤에 규칙 버그를 찾으면
+누구 화면이 맞는지부터 다퉈야 한다.
+
+**Files:**
+- Create: `js/sim.js`
+- Create: `test/sim.test.js`
+
+**Interfaces:**
+- Consumes: `window.World` (Task 5), `window.Stations` (Task 6)
+- Produces:
+  - `window.Sim.SPEED` = `210` (초당 디자인 픽셀)
+  - `window.Sim.REACH` = `46` (기계에 손이 닿는 거리)
+  - `window.Sim.create(map, pids)` → 새 상태
+    - `{ t, map, players:{<pid>:{x,y,dir,hold,tap}}, machines:{<id>:{id,type,item,prog}}, done, goal }`
+    - `hold`: 들고 있는 물건 상태 문자열 또는 `null`
+    - `dir`: `0`=아래 `1`=왼쪽 `2`=오른쪽 `3`=위 (그리기용)
+    - `done`: 납품 개수
+  - `window.Sim.tick(state, inputs, dt)` → 새 상태. `inputs`는 `{<pid>:{x,y,seq}}`
+    - `seq`는 액션(집기/놓기/작업) 누른 횟수. 늘어난 만큼 액션을 처리한다.
+  - `window.Sim.join(state, pid, spawnIndex)` → 새 상태 (플레이어 추가)
+  - `window.Sim.leave(state, pid)` → 새 상태 (플레이어 제거, 들고 있던 건 사라진다)
+
+**액션 하나가 하는 일 (순서대로 검사, 첫 번째로 맞는 것만 실행):**
+
+1. 손이 비었고 가까운 기계가 `source` → 새 물건을 든다
+2. 손이 비었고 `tap` 기계에 **아직 처리할 수 있는** 물건이 있음 → 한 번 두드린다
+3. 손이 비었고 기계에 물건이 있음 → 그 물건을 집는다
+4. 손에 물건이 있고 가까운 기계가 `sink` → 넣는다 (납품대면 목표와 맞을 때만 점수)
+5. 손에 물건이 있고 기계가 비었고 받아 줌 → 놓는다
+6. 아무것도 아님
+
+> **두드리기가 집기보다 앞서야 하는 이유:** 집기가 먼저면 모델링대에 레퍼런스를
+> 놓고 두드리려 할 때마다 도로 집어 들게 되어 작업이 영원히 안 된다. 두드리기를
+> 앞에 두되 **그 기계가 아직 처리할 수 있는 물건일 때만** 걸리게 하면, 다 된
+> 하이폴리는 `canAccept` 가 false 라 자연히 집기로 넘어간다. 규칙 하나로
+> "작업 중에는 두드리고, 다 되면 집는다"가 된다.
+
+> **손이 비어야만 두드릴 수 있는 이유:** 물건을 든 채로 두드릴 수 있으면 한 사람이
+> 레퍼런스를 들고 모델링대 앞에 서서 혼자 다 끝낸다. 손을 비워야만 두드릴 수
+> 있어야 "놓고 → 두드리고 → 집어서 → 옮긴다"가 되고, 그래야 여럿이 나눠 맡을
+> 이유가 생긴다.
+
+- [ ] **Step 1: 실패하는 테스트를 쓴다**
+
+`test/sim.test.js`:
+
+```js
+'use strict';
+const { test } = require('node:test');
+const assert = require('node:assert');
+const { load } = require('../testlib/load');
+
+function sim() { return load(['world', 'stations', 'sim']); }
+
+/* 기계 넷만 있는 시험용 맵. 실제 맵은 넓어서 좌표 계산이 번거롭다. */
+function bench(w) {
+  const W = w.World, T = W.TILE;
+  return {
+    cols: 10, rows: 5,
+    grid: ('##########' +
+           '#SS....SS#' +
+           '#........#' +
+           '#SS....SS#' +
+           '##########').split(''),
+    spawns: [{ x: 5 * T, y: 2 * T + T / 2 }, { x: 4 * T, y: 2 * T + T / 2 }],
+    stations: [
+      { id: 'r', type: 'ref',    cx: 1 * T + T / 2, cy: 1 * T + T / 2 },
+      { id: 'm', type: 'model',  cx: 7 * T + T / 2, cy: 1 * T + T / 2 },
+      { id: 'q', type: 'retopo', cx: 1 * T + T / 2, cy: 3 * T + T / 2 },
+      { id: 's', type: 'ship',   cx: 7 * T + T / 2, cy: 3 * T + T / 2 }
+    ]
+  };
+}
+
+/* 플레이어를 기계 바로 옆에 세운다 (닿는 거리 안) */
+function stand(st, pid, stationId, S) {
+  const m = st.map.stations.find(x => x.id === stationId);
+  const p = st.players[pid];
+  p.x = m.cx; p.y = m.cy + 30;
+  return st;
+}
+
+function act(w, st, pid, inputs) {
+  const seq = (inputs && inputs[pid] ? inputs[pid].seq : 0);
+  const inp = {}; inp[pid] = { x: 0, y: 0, seq: seq + 1 };
+  return { st: w.Sim.tick(st, inp, 1 / 60), inputs: inp };
+}
+
+test('create 는 플레이어와 기계를 세운다', () => {
+  const w = sim(), S = w.Sim;
+  const st = S.create(bench(w), ['a', 'b']);
+  assert.strictEqual(Object.keys(st.players).length, 2);
+  assert.strictEqual(Object.keys(st.machines).length, 4);
+  assert.strictEqual(st.players.a.hold, null);
+  assert.strictEqual(st.machines.m.item, null);
+  assert.strictEqual(st.done, 0);
+  assert.strictEqual(st.t, 0);
+});
+
+test('tick 은 t 를 올린다', () => {
+  const w = sim(), S = w.Sim;
+  let st = S.create(bench(w), ['a']);
+  st = S.tick(st, {}, 0.5);
+  assert.ok(Math.abs(st.t - 0.5) < 1e-9);
+});
+
+test('방향 입력으로 움직인다', () => {
+  const w = sim(), S = w.Sim;
+  let st = S.create(bench(w), ['a']);
+  const x0 = st.players.a.x;
+  st = S.tick(st, { a: { x: 1, y: 0, seq: 0 } }, 0.5);
+  assert.ok(st.players.a.x > x0, '오른쪽으로 가야 한다');
+  assert.strictEqual(st.players.a.dir, 2, '오른쪽을 봐야 한다');
+});
+
+test('대각선으로 가도 속도가 빨라지지 않는다', () => {
+  const w = sim(), S = w.Sim;
+  const start = S.create(bench(w), ['a']);
+  const a = S.tick(start, { a: { x: 1, y: 0, seq: 0 } }, 0.2);
+  const b = S.tick(start, { a: { x: 1, y: 1, seq: 0 } }, 0.2);
+  const da = Math.hypot(a.players.a.x - start.players.a.x, a.players.a.y - start.players.a.y);
+  const db = Math.hypot(b.players.a.x - start.players.a.x, b.players.a.y - start.players.a.y);
+  assert.ok(Math.abs(da - db) < 1.5, '대각선이 더 빠르면 안 된다: ' + da + ' vs ' + db);
+});
+
+test('tick 은 원본 상태를 고치지 않는다', () => {
+  const w = sim(), S = w.Sim;
+  const st = S.create(bench(w), ['a']);
+  const x0 = st.players.a.x;
+  S.tick(st, { a: { x: 1, y: 0, seq: 0 } }, 0.5);
+  assert.strictEqual(st.players.a.x, x0);
+});
+
+test('seq 가 그대로면 액션이 안 일어난다', () => {
+  const w = sim(), S = w.Sim;
+  let st = S.create(bench(w), ['a']);
+  stand(st, 'a', 'r', S);
+  st = S.tick(st, { a: { x: 0, y: 0, seq: 0 } }, 1 / 60);
+  st = S.tick(st, { a: { x: 0, y: 0, seq: 0 } }, 1 / 60);
+  assert.strictEqual(st.players.a.hold, null);
+});
+
+test('선반 옆에서 액션하면 레퍼런스를 든다', () => {
+  const w = sim(), S = w.Sim;
+  let st = S.create(bench(w), ['a']);
+  stand(st, 'a', 'r', S);
+  st = S.tick(st, { a: { x: 0, y: 0, seq: 1 } }, 1 / 60);
+  assert.strictEqual(st.players.a.hold, 'ref');
+});
+
+test('멀리 있으면 아무 일도 안 일어난다', () => {
+  const w = sim(), S = w.Sim;
+  let st = S.create(bench(w), ['a']);
+  st.players.a.x = 5 * w.World.TILE;
+  st.players.a.y = 2 * w.World.TILE + w.World.TILE / 2;
+  st = S.tick(st, { a: { x: 0, y: 0, seq: 1 } }, 1 / 60);
+  assert.strictEqual(st.players.a.hold, null);
+});
+
+test('받아 주는 기계에만 놓을 수 있다', () => {
+  const w = sim(), S = w.Sim;
+  let st = S.create(bench(w), ['a']);
+  st.players.a.hold = 'ref';
+  stand(st, 'a', 'q', S);                       // 리토폴은 high 만 받는다
+  st = S.tick(st, { a: { x: 0, y: 0, seq: 1 } }, 1 / 60);
+  assert.strictEqual(st.players.a.hold, 'ref', '아직 손에 있어야 한다');
+  assert.strictEqual(st.machines.q.item, null);
+});
+
+test('모델링대에 레퍼런스를 놓고 연타하면 하이폴리가 된다', () => {
+  const w = sim(), S = w.Sim;
+  const need = w.Stations.TYPES.model.work;
+  let st = S.create(bench(w), ['a']);
+  st.players.a.hold = 'ref';
+  stand(st, 'a', 'm', S);
+
+  let seq = 0;
+  st = S.tick(st, { a: { x: 0, y: 0, seq: ++seq } }, 1 / 60);   // 놓기
+  assert.strictEqual(st.machines.m.item, 'ref');
+  assert.strictEqual(st.players.a.hold, null);
+
+  for (let i = 0; i < need - 1; i++) {
+    st = S.tick(st, { a: { x: 0, y: 0, seq: ++seq } }, 1 / 60);
+    assert.strictEqual(st.machines.m.item, 'ref', i + '번째에 벌써 끝나면 안 된다');
+  }
+  st = S.tick(st, { a: { x: 0, y: 0, seq: ++seq } }, 1 / 60);
+  assert.strictEqual(st.machines.m.item, 'high', need + '번이면 끝나야 한다');
+  assert.strictEqual(st.machines.m.prog, 0, '끝나면 누름 수가 초기화된다');
+});
+
+test('손에 물건이 있으면 두드릴 수 없다', () => {
+  const w = sim(), S = w.Sim;
+  let st = S.create(bench(w), ['a', 'b']);
+  st.machines.m = { id: 'm', type: 'model', item: 'ref', prog: 0 };
+  st.players.a.hold = 'ref';
+  stand(st, 'a', 'm', S);
+  st = S.tick(st, { a: { x: 0, y: 0, seq: 1 } }, 1 / 60);
+  assert.strictEqual(st.machines.m.prog, 0, '두드려지면 안 된다');
+  assert.strictEqual(st.players.a.hold, 'ref', '기계가 차 있으니 놓지도 못한다');
+});
+
+test('기계 위의 물건을 집을 수 있다', () => {
+  const w = sim(), S = w.Sim;
+  let st = S.create(bench(w), ['a']);
+  st.machines.m = { id: 'm', type: 'model', item: 'high', prog: 0 };
+  stand(st, 'a', 'm', S);
+  st = S.tick(st, { a: { x: 0, y: 0, seq: 1 } }, 1 / 60);
+  assert.strictEqual(st.players.a.hold, 'high');
+  assert.strictEqual(st.machines.m.item, null);
+});
+
+test('납품대에 목표 물건을 넣으면 점수가 오른다', () => {
+  const w = sim(), S = w.Sim;
+  let st = S.create(bench(w), ['a']);
+  st.players.a.hold = st.goal.need;
+  stand(st, 'a', 's', S);
+  st = S.tick(st, { a: { x: 0, y: 0, seq: 1 } }, 1 / 60);
+  assert.strictEqual(st.done, 1);
+  assert.strictEqual(st.players.a.hold, null);
+});
+
+test('납품대에 엉뚱한 걸 넣으면 사라지되 점수는 안 오른다', () => {
+  const w = sim(), S = w.Sim;
+  let st = S.create(bench(w), ['a']);
+  st.players.a.hold = 'ref';
+  stand(st, 'a', 's', S);
+  st = S.tick(st, { a: { x: 0, y: 0, seq: 1 } }, 1 / 60);
+  assert.strictEqual(st.done, 0);
+  assert.strictEqual(st.players.a.hold, null, '넣긴 넣어진다');
+});
+
+test('연타 한 번에 seq 가 여러 칸 뛰면 그만큼 처리한다', () => {
+  const w = sim(), S = w.Sim;
+  let st = S.create(bench(w), ['a']);
+  st.machines.m = { id: 'm', type: 'model', item: 'ref', prog: 0 };
+  stand(st, 'a', 'm', S);
+  /* 네트워크가 밀려 seq 가 한꺼번에 3 늘어난 상황. 연타가 씹히면 안 된다. */
+  st = S.tick(st, { a: { x: 0, y: 0, seq: 3 } }, 1 / 60);
+  assert.strictEqual(st.machines.m.prog, 3);
+});
+
+test('한 번에 너무 많이 밀려도 상한이 있다', () => {
+  const w = sim(), S = w.Sim;
+  let st = S.create(bench(w), ['a']);
+  st.machines.m = { id: 'm', type: 'model', item: 'ref', prog: 0 };
+  stand(st, 'a', 'm', S);
+  st = S.tick(st, { a: { x: 0, y: 0, seq: 100000 } }, 1 / 60);
+  assert.ok(st.machines.m.item === 'high' || st.machines.m.prog <= 20,
+    '한 틱에 무한히 처리하면 안 된다');
+});
+
+test('join 이 플레이어를 넣고 leave 가 뺀다', () => {
+  const w = sim(), S = w.Sim;
+  let st = S.create(bench(w), ['a']);
+  st = S.join(st, 'b', 1);
+  assert.ok(st.players.b, 'b 가 들어와야 한다');
+  st.players.b.hold = 'high';
+  st = S.leave(st, 'b');
+  assert.strictEqual(st.players.b, undefined);
+});
+
+test('join 은 이미 있는 사람을 덮어쓰지 않는다', () => {
+  const w = sim(), S = w.Sim;
+  let st = S.create(bench(w), ['a']);
+  st.players.a.hold = 'low';
+  st = S.join(st, 'a', 0);
+  assert.strictEqual(st.players.a.hold, 'low', '들고 있던 게 사라지면 안 된다');
+});
+
+test('wait 기계는 시간이 지나면 저절로 익는다', () => {
+  const w = sim(), S = w.Sim;
+  const map = bench(w);
+  map.stations.push({ id: 'u', type: 'uv', cx: 4 * w.World.TILE, cy: 1 * w.World.TILE });
+  let st = S.create(map, ['a']);
+  st.machines.u = { id: 'u', type: 'uv', item: 'low', prog: 0 };
+  st = S.tick(st, {}, w.Stations.TYPES.uv.work + 0.1);
+  assert.strictEqual(st.machines.u.item, 'uv');
+});
+
+test('벽을 통과하지 못한다', () => {
+  const w = sim(), S = w.Sim;
+  let st = S.create(bench(w), ['a']);
+  for (let i = 0; i < 120; i++) st = S.tick(st, { a: { x: -1, y: 0, seq: 0 } }, 1 / 60);
+  assert.ok(!w.World.blocked(st.map, st.players.a.x, st.players.a.y), '벽 안에 있으면 안 된다');
+});
+```
+
+- [ ] **Step 2: 실패를 확인한다**
+
+Run: `cd /c/Users/NAU/Desktop/Overworked && node --test test/sim.test.js`
+Expected: FAIL — `ENOENT ... js/sim.js`
+
+- [ ] **Step 3: 구현**
+
+`js/sim.js`:
+
+```js
+/* ============================================================
+   오버워크드 — 시뮬레이션 (호스트 전용, 유일한 권위)
+
+   호스트 브라우저만 이걸 돌린다. 나머지는 결과를 받아 그리기만 한다.
+   "이 물건을 누가 들었나"에 답이 하나뿐이어야 오버쿡드류가 성립한다.
+
+   이 파일은 네트워크도 캔버스도 DOM 도 모른다. 순수 함수 덩어리라
+   브라우저 없이 Node 로 전부 검증한다 — 8명 붙은 뒤에 규칙 버그를 찾으면
+   누구 화면이 맞는지부터 다퉈야 한다.
+
+   ── 액션이 하나뿐인 이유 ────────────────────────────────
+   집기·놓기·작업을 키 하나로 몰았다. 키가 셋이면 처음 하는 사람이 뭘 눌러야
+   할지 매번 생각해야 하는데, 이 게임에서 생각할 것은 "지금 뭘 해야 하나"지
+   "무슨 키를 눌러야 하나"가 아니다. 상황이 곧 동작을 정한다.
+
+   ── 손이 비어야만 두드릴 수 있는 이유 ───────────────────
+   물건을 든 채로 두드릴 수 있으면 한 사람이 레퍼런스를 들고 모델링대 앞에
+   서서 혼자 다 끝낸다. 손을 비워야만 두드릴 수 있어야 "놓고 → 두드리고 →
+   집어서 → 옮긴다"가 되고, 그래야 여럿이 나눠 맡을 이유가 생긴다.
+   ============================================================ */
+(function (global) {
+  'use strict';
+
+  var SPEED = 210;        // 초당 디자인 픽셀. 1280 폭을 6초에 가로지른다.
+  var REACH = 46;         // 기계에 손이 닿는 거리. 타일(40)보다 조금 커야 답답하지 않다.
+  var MAX_ACTS = 8;       // 한 틱에 처리할 액션 상한 (네트워크가 밀렸을 때 폭주 방지)
+
+  var W = null, St = null;
+  function deps() {
+    if (!W) W = global.World;
+    if (!St) St = global.Stations;
+  }
+
+  function copyPlayers(src) {
+    var o = {}, k;
+    for (k in src) if (Object.prototype.hasOwnProperty.call(src, k)) {
+      var p = src[k];
+      o[k] = { x: p.x, y: p.y, dir: p.dir, hold: p.hold, tap: p.tap, seq: p.seq };
+    }
+    return o;
+  }
+
+  function copyMachines(src) {
+    var o = {}, k;
+    for (k in src) if (Object.prototype.hasOwnProperty.call(src, k)) {
+      var m = src[k];
+      o[k] = { id: m.id, type: m.type, item: m.item, prog: m.prog };
+    }
+    return o;
+  }
+
+  function create(map, pids) {
+    deps();
+    var st = {
+      t: 0,
+      map: map,
+      players: {},
+      machines: {},
+      done: 0,
+      goal: St.STAGE1_GOAL
+    };
+    for (var i = 0; i < map.stations.length; i++) {
+      var s = map.stations[i];
+      st.machines[s.id] = { id: s.id, type: s.type, item: null, prog: 0 };
+    }
+    for (var j = 0; j < (pids || []).length; j++) {
+      st = join(st, pids[j], j);
+    }
+    return st;
+  }
+
+  function join(state, pid, spawnIndex) {
+    deps();
+    if (state.players[pid]) return state;          // 이미 있으면 들고 있던 걸 지키지 않는다
+    var players = copyPlayers(state.players);
+    var sp = state.map.spawns[spawnIndex % state.map.spawns.length] || { x: 100, y: 100 };
+    players[pid] = { x: sp.x, y: sp.y, dir: 0, hold: null, tap: 0, seq: 0 };
+    return {
+      t: state.t, map: state.map, players: players,
+      machines: state.machines, done: state.done, goal: state.goal
+    };
+  }
+
+  function leave(state, pid) {
+    var players = copyPlayers(state.players);
+    /* 들고 있던 물건은 같이 사라진다. 바닥에 떨구게 하면 "바닥에 놓인 물건"이라는
+       개념을 하나 더 만들어야 하는데, 나간 사람 때문에 규칙이 늘 이유가 없다. */
+    delete players[pid];
+    return {
+      t: state.t, map: state.map, players: players,
+      machines: state.machines, done: state.done, goal: state.goal
+    };
+  }
+
+  /* 액션 한 번. state 를 그 자리에서 고친다 — tick 안에서 이미 복사한 뒤라 안전하다. */
+  function doAction(state, pid) {
+    deps();
+    var p = state.players[pid];
+    if (!p) return;
+
+    var s = W.nearest(state.map, p.x, p.y, REACH);
+    if (!s) return;
+    var m = state.machines[s.id];
+    if (!m) return;
+    var d = St.get(m.type);
+    if (!d) return;
+
+    /* 1) 선반에서 새로 든다 */
+    if (p.hold === null && d.mode === 'source') { p.hold = d.gives; return; }
+
+    /* 2) 두드린다 — 집기보다 반드시 앞에 와야 한다.
+       집기가 먼저면 모델링대에 레퍼런스를 놓고 두드리려 할 때마다 도로 집어
+       들게 되어 작업이 영원히 안 된다. canAccept 로 "아직 처리할 수 있는
+       물건"일 때만 걸리게 하면, 다 된 하이폴리는 자연히 아래 집기로 넘어간다. */
+    if (p.hold === null && d.mode === 'tap' &&
+        m.item !== null && St.canAccept(m.type, m.item)) {
+      m.prog += 1;
+      if (m.prog >= d.work) { m.item = d.gives; m.prog = 0; }
+      return;
+    }
+
+    /* 3) 기계 위의 물건을 집는다 */
+    if (p.hold === null && m.item !== null) {
+      p.hold = m.item;
+      m.item = null;
+      m.prog = 0;
+      return;
+    }
+
+    /* 4) 납품대·폐기통에 넣는다 */
+    if (p.hold !== null && d.mode === 'sink') {
+      if (m.type === 'ship' && p.hold === state.goal.need) state.done += 1;
+      p.hold = null;
+      return;
+    }
+
+    /* 5) 빈 기계에 놓는다 */
+    if (p.hold !== null && m.item === null && St.canAccept(m.type, p.hold)) {
+      m.item = p.hold;
+      m.prog = 0;
+      p.hold = null;
+      return;
+    }
+  }
+
+  function tick(state, inputs, dt) {
+    deps();
+    var players = copyPlayers(state.players);
+    var machines = copyMachines(state.machines);
+    var next = {
+      t: state.t + dt, map: state.map, players: players,
+      machines: machines, done: state.done, goal: state.goal
+    };
+
+    var pid;
+
+    /* 이동 */
+    for (pid in players) {
+      if (!Object.prototype.hasOwnProperty.call(players, pid)) continue;
+      var p = players[pid];
+      var inp = (inputs && inputs[pid]) || null;
+      var ix = inp ? (inp.x || 0) : 0;
+      var iy = inp ? (inp.y || 0) : 0;
+
+      if (ix || iy) {
+        /* 대각선이 더 빠르면 다들 대각선으로만 다닌다. 길이를 1 로 맞춘다. */
+        var len = Math.sqrt(ix * ix + iy * iy);
+        var vx = (ix / len) * SPEED * dt;
+        var vy = (iy / len) * SPEED * dt;
+        var np = W.move(state.map, p.x, p.y, vx, vy);
+        p.x = np.x; p.y = np.y;
+        /* 보는 쪽은 더 크게 움직인 축으로 정한다 */
+        if (Math.abs(ix) > Math.abs(iy)) p.dir = ix > 0 ? 2 : 1;
+        else p.dir = iy > 0 ? 0 : 3;
+      }
+    }
+
+    /* 액션 — seq 가 늘어난 만큼 처리한다.
+       한 번만 처리하면 네트워크가 밀렸을 때 연타가 씹힌다. */
+    for (pid in players) {
+      if (!Object.prototype.hasOwnProperty.call(players, pid)) continue;
+      var inp2 = (inputs && inputs[pid]) || null;
+      if (!inp2) continue;
+      var want = inp2.seq || 0;
+      var have = players[pid].seq || 0;
+      var n = want - have;
+      if (n <= 0) { players[pid].seq = want; continue; }   // 되감기(재입장 등)도 맞춰 준다
+      if (n > MAX_ACTS) n = MAX_ACTS;
+      for (var k = 0; k < n; k++) doAction(next, pid);
+      players[pid].seq = have + n;
+      players[pid].tap = next.t;                            // 그리는 쪽이 "방금 두드렸다"를 안다
+    }
+
+    /* 대기형 기계 굴리기 */
+    for (var id in machines) {
+      if (!Object.prototype.hasOwnProperty.call(machines, id)) continue;
+      machines[id] = St.step(machines[id], dt);
+    }
+
+    return next;
+  }
+
+  global.Sim = {
+    SPEED: SPEED,
+    REACH: REACH,
+    MAX_ACTS: MAX_ACTS,
+    create: create,
+    join: join,
+    leave: leave,
+    tick: tick
+  };
+})(window);
+```
+
+- [ ] **Step 4: 통과를 확인한다**
+
+Run: `cd /c/Users/NAU/Desktop/Overworked && node --test test/sim.test.js`
+Expected: PASS — `20 pass, 0 fail`
+
+- [ ] **Step 5: 커밋**
+
+```bash
+cd /c/Users/NAU/Desktop/Overworked
+git add js/sim.js test/sim.test.js
+git commit -m "$(printf '%s\n' '시뮬레이션: 호스트만 돌리는 유일한 권위' '' '네트워크도 캔버스도 DOM 도 모르는 순수 함수 덩어리라, 브라우저 없이 Node 로' '전부 검증한다. 8명 붙은 뒤에 규칙 버그를 찾으면 누구 화면이 맞는지부터' '다퉈야 한다.' '' '집기/놓기/작업을 키 하나로 몰았다. 이 게임에서 생각할 것은 "지금 뭘 해야' '하나"지 "무슨 키를 눌러야 하나"가 아니다. 상황이 곧 동작을 정한다.' '' '손이 비어야만 두드릴 수 있게 했다. 물건을 든 채로 두드리면 한 사람이' '레퍼런스를 들고 모델링대 앞에서 혼자 다 끝낸다. 그러면 협동 게임이 아니다.' '' 'seq 가 늘어난 만큼 액션을 처리한다 — 한 번만 처리하면 네트워크가 밀렸을 때' '연타가 씹힌다. 대신 한 틱 상한을 둬서 폭주는 막는다.' '' 'Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
+```
+
+---
