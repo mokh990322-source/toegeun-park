@@ -81,11 +81,6 @@
     return out;
   }
 
-  function nextHost(who, nowMs) {
-    var list = alive(who, nowMs);
-    return list.length ? list[0] : null;
-  }
-
   function hostDead(lastTick, lastChangeMs, nowMs) {
     /* 아직 스냅샷을 한 번도 못 받았으면 판단하지 않는다. 방금 들어온 사람이
        "조용하네"라며 승계해 버리면 멀쩡한 호스트를 밀어낸다. */
@@ -149,7 +144,6 @@
     CLAIM_WAIT: CLAIM_WAIT,
     SEEN_TIMEOUT: SEEN_TIMEOUT,
     alive: alive,
-    nextHost: nextHost,
     hostDead: hostDead,
     shouldClaim: shouldClaim
   };

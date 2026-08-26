@@ -34,17 +34,6 @@ test('alive 는 빈 목록도 견딘다', () => {
   assert.deepStrictEqual(r.alive({}, NOW), []);
 });
 
-test('nextHost 는 입장 순번이 가장 빠른 생존자', () => {
-  const r = R();
-  const w = who({ a: { join: 1, agoSec: 99 }, b: { join: 2, agoSec: 1 }, c: { join: 3, agoSec: 1 } });
-  assert.strictEqual(r.nextHost(w, NOW), 'b');
-});
-
-test('nextHost 는 아무도 없으면 null', () => {
-  const r = R();
-  assert.strictEqual(r.nextHost(who({ a: { join: 1, agoSec: 99 } }), NOW), null);
-});
-
 test('hostDead 는 틱이 멈춘 지 오래면 참', () => {
   const r = R();
   const ms = r.HOST_TIMEOUT * 1000;
