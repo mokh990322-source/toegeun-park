@@ -2646,3 +2646,302 @@ git commit -m "$(printf '%s\n' '호스트 승계: 판단을 순수 함수로 떼
 ```
 
 ---
+### Task 10: 보간과 예측
+
+10Hz로 오는 스냅샷을 60Hz 화면으로 펴는 부분. **이 게임에서 가장 미묘한 코드다.**
+
+- 남의 캐릭터: 스냅샷 두 개 사이를 보간한다. 100ms 늦게 보여 주는 대신 끊기지 않는다
+- 내 캐릭터: 로컬에서 먼저 움직이고(예측), 호스트 값과 벌어지면 조용히 당긴다
+
+둘 다 순수 함수로 떼어내 Node 로 검증한다. 화면에 섞어 두면 "왜 캐릭터가 떨리지"를
+눈으로 쫓아야 하는데, 그건 8명이 붙은 자리에서 할 수 있는 일이 아니다.
+
+**Files:**
+- Create: `js/interp.js`
+- Create: `test/interp.test.js`
+
+**Interfaces:**
+- Consumes: 없음
+- Produces:
+  - `window.Interp.DELAY` = `0.15` (초). 남의 캐릭터를 이만큼 늦게 보여 준다
+  - `window.Interp.SNAP_DIST` = `220` (디자인 픽셀). 이보다 멀면 보간을 포기하고 순간이동
+  - `window.Interp.CORRECT_RATE` = `6.0` (초당). 내 캐릭터 오차를 당기는 속도
+  - `window.Interp.Buffer()` → 생성자. `push(tSec, packed)`, `sample(nowSec)` → `{a, b, k}` 또는 `null`
+    - `a`, `b`는 앞뒤 스냅샷, `k`는 0~1 섞는 비율
+  - `window.Interp.lerp(a, b, k)` → 수
+  - `window.Interp.between(pa, pb, k)` → `{x, y}` — 두 좌표 배열 사이. 너무 멀면 `b` 로 튄다
+  - `window.Interp.correct(local, server, dt)` → 새 `{x, y}` — 내 캐릭터 오차 보정
+
+- [ ] **Step 1: 실패하는 테스트를 쓴다**
+
+`test/interp.test.js`:
+
+```js
+'use strict';
+const { test } = require('node:test');
+const assert = require('node:assert');
+const { load } = require('../testlib/load');
+
+function I() { return load('interp').Interp; }
+
+test('상수가 말이 되는 범위다', () => {
+  const N = I();
+  assert.ok(N.DELAY >= 0.1 && N.DELAY <= 0.3, '지연 버퍼는 스냅샷 간격(0.1초)보다 커야 한다');
+  assert.ok(N.SNAP_DIST > 100, '너무 작으면 평범한 이동에도 순간이동한다');
+  assert.ok(N.CORRECT_RATE > 0);
+});
+
+test('lerp 기본', () => {
+  const N = I();
+  assert.strictEqual(N.lerp(0, 10, 0), 0);
+  assert.strictEqual(N.lerp(0, 10, 1), 10);
+  assert.strictEqual(N.lerp(0, 10, 0.5), 5);
+});
+
+test('between 은 두 점 사이를 준다', () => {
+  const N = I();
+  /* 거리 156 — 순간이동 문턱(220)보다 한참 안쪽 */
+  assert.deepStrictEqual(N.between([0, 0], [100, 120], 0.5), { x: 50, y: 60 });
+  assert.deepStrictEqual(N.between([0, 0], [100, 120], 0), { x: 0, y: 0 });
+  assert.deepStrictEqual(N.between([0, 0], [100, 120], 1), { x: 100, y: 120 });
+});
+
+test('순간이동 문턱이 정상 이동보다 한참 크다', () => {
+  const N = I();
+  /* 스냅샷 두 개 사이(0.1초)에 정상적으로 움직일 수 있는 최대 거리는
+     Sim.SPEED(210) x 0.1 = 21px 다. 문턱이 그보다 훨씬 커야 평범한 달리기가
+     순간이동으로 오인되지 않는다. */
+  const perSnapshot = 210 * 0.1;
+  assert.ok(N.SNAP_DIST > perSnapshot * 5,
+    '문턱 ' + N.SNAP_DIST + ' 가 한 스냅샷 이동거리 ' + perSnapshot + ' 에 비해 너무 좁다');
+});
+
+test('between 은 너무 멀면 뒤쪽으로 튄다', () => {
+  const N = I();
+  const far = N.SNAP_DIST + 100;
+  const out = N.between([0, 0], [far, 0], 0.5);
+  assert.strictEqual(out.x, far, '멀면 끌지 말고 바로 옮겨야 한다');
+});
+
+test('버퍼는 스냅샷이 하나뿐이면 그것만 준다', () => {
+  const N = I();
+  const b = new N.Buffer();
+  b.push(1.0, { t: 10, p: { a: [0, 0, 0, -1] } });
+  const s = b.sample(1.0);
+  assert.ok(s, '하나라도 있으면 뭔가 줘야 한다');
+  assert.strictEqual(s.a, s.b, '앞뒤가 같아야 한다');
+  assert.strictEqual(s.k, 0);
+});
+
+test('버퍼는 아무것도 없으면 null', () => {
+  const N = I();
+  assert.strictEqual(new N.Buffer().sample(1.0), null);
+});
+
+test('버퍼는 지연만큼 과거를 보여 준다', () => {
+  const N = I();
+  const b = new N.Buffer();
+  b.push(1.0, { t: 10 });
+  b.push(1.1, { t: 11 });
+  b.push(1.2, { t: 12 });
+  /* 지금이 1.2 라면 (1.2 - DELAY) 시점을 본다 */
+  const s = b.sample(1.2);
+  const target = 1.2 - N.DELAY;
+  assert.ok(s.a.t <= 11, '과거 스냅샷을 골라야 한다: ' + s.a.t + ' (목표시각 ' + target + ')');
+});
+
+test('버퍼는 두 스냅샷 사이 비율을 준다', () => {
+  const N = I();
+  const b = new N.Buffer();
+  const d = N.DELAY;
+  b.push(1.0, { t: 10 });
+  b.push(1.2, { t: 12 });
+  const s = b.sample(1.1 + d);          // 목표시각 1.1 — 딱 중간
+  assert.strictEqual(s.a.t, 10);
+  assert.strictEqual(s.b.t, 12);
+  assert.ok(Math.abs(s.k - 0.5) < 0.02, '중간이어야 한다: ' + s.k);
+});
+
+test('버퍼는 목표시각이 최신보다 뒤면 최신에 붙는다', () => {
+  const N = I();
+  const b = new N.Buffer();
+  b.push(1.0, { t: 10 });
+  b.push(1.1, { t: 11 });
+  const s = b.sample(1.1);              // 목표시각 = 1.1 - DELAY, 첫 것보다도 과거
+  assert.ok(s, '그래도 뭔가 줘야 한다');
+});
+
+test('버퍼는 무한히 쌓이지 않는다', () => {
+  const N = I();
+  const b = new N.Buffer();
+  for (let i = 0; i < 500; i++) b.push(i * 0.1, { t: i });
+  assert.ok(b.size() <= 30, '오래된 건 버려야 한다: ' + b.size());
+});
+
+test('버퍼는 순서가 뒤집힌 스냅샷을 버린다', () => {
+  const N = I();
+  const b = new N.Buffer();
+  b.push(1.0, { t: 10 });
+  b.push(1.1, { t: 11 });
+  b.push(1.05, { t: 9 });               // 늦게 도착한 옛날 것
+  const s = b.sample(1.1 + N.DELAY);
+  assert.strictEqual(s.b.t, 11, '옛날 것이 최신을 밀어내면 안 된다');
+});
+
+/* ---------- 내 캐릭터 보정 ---------- */
+
+test('오차가 없으면 그대로 둔다', () => {
+  const N = I();
+  const out = N.correct({ x: 100, y: 100 }, { x: 100, y: 100 }, 1 / 60);
+  assert.strictEqual(Math.round(out.x), 100);
+});
+
+test('작은 오차는 조금씩 당긴다', () => {
+  const N = I();
+  const out = N.correct({ x: 100, y: 100 }, { x: 120, y: 100 }, 1 / 60);
+  assert.ok(out.x > 100 && out.x < 120, '한 번에 다 가면 튄다: ' + out.x);
+});
+
+test('당기다 보면 결국 맞는다', () => {
+  const N = I();
+  let p = { x: 100, y: 100 };
+  for (let i = 0; i < 120; i++) p = N.correct(p, { x: 120, y: 100 }, 1 / 60);
+  assert.ok(Math.abs(p.x - 120) < 1, '2초면 붙어야 한다: ' + p.x);
+});
+
+test('오차가 아주 크면 그냥 순간이동한다', () => {
+  const N = I();
+  const far = N.SNAP_DIST + 200;
+  const out = N.correct({ x: 0, y: 0 }, { x: far, y: 0 }, 1 / 60);
+  assert.strictEqual(out.x, far, '되감기 수준으로 벌어지면 끌지 말고 옮긴다');
+});
+
+test('correct 는 원본을 고치지 않는다', () => {
+  const N = I();
+  const local = { x: 100, y: 100 };
+  N.correct(local, { x: 200, y: 100 }, 1 / 60);
+  assert.strictEqual(local.x, 100);
+});
+```
+
+- [ ] **Step 2: 실패를 확인한다**
+
+Run: `cd /c/Users/NAU/Desktop/Overworked && node --test test/interp.test.js`
+Expected: FAIL — `ENOENT ... js/interp.js`
+
+- [ ] **Step 3: 구현**
+
+`js/interp.js`:
+
+```js
+/* ============================================================
+   오버워크드 — 보간과 예측
+
+   10Hz 로 오는 스냅샷을 60Hz 화면으로 편다. 이 게임에서 가장 미묘한 코드라
+   화면에서 떼어내 순수 함수로 두었다 — 그리기에 섞으면 "왜 캐릭터가 떨리지"를
+   눈으로 쫓아야 하는데, 8명이 붙은 자리에서 할 수 있는 일이 아니다.
+
+   ── 남의 캐릭터: 150ms 늦게 보여 준다 ──────────────────
+   스냅샷 간격이 100ms 이고 가끔 한 번씩 누락된다. 지금 막 도착한 값을 바로
+   그리면 다음 것이 늦을 때마다 멈췄다 튄다. 항상 150ms 과거를 그리면 손에
+   늘 두 개가 있어서 그 사이를 부드럽게 지나간다. 협동 게임이라 남이 150ms
+   늦게 보이는 건 아무도 눈치채지 못한다.
+
+   ── 내 캐릭터: 먼저 움직이고 나중에 맞춘다 ─────────────
+   내 입력이 호스트를 거쳐 돌아오려면 150ms 걸린다. 그걸 기다리면 조작이
+   먹통처럼 느껴진다. 그래서 로컬에서 먼저 움직이고, 호스트 값이 오면 차이를
+   초당 6배율로 당긴다. 순간이동시키지 않는 이유는 벽에 밀릴 때마다 화면이
+   튀기 때문이다.
+
+   ── 언제 포기하는가 ────────────────────────────────────
+   차이가 220px 를 넘으면 보간도 보정도 포기하고 그냥 옮긴다. 그 정도로
+   벌어졌다면 순간이동했거나(재입장·호스트 승계) 오래 끊겼던 것이라, 부드럽게
+   끌면 몇 초 동안 엉뚱한 데를 걸어간다.
+   ============================================================ */
+(function (global) {
+  'use strict';
+
+  var DELAY = 0.15;
+  var SNAP_DIST = 220;
+  var CORRECT_RATE = 6.0;
+  var KEEP = 30;              // 버퍼에 쌓아 두는 스냅샷 수 (3초치)
+
+  function lerp(a, b, k) { return a + (b - a) * k; }
+
+  function between(pa, pb, k) {
+    var dx = pb[0] - pa[0], dy = pb[1] - pa[1];
+    if (dx * dx + dy * dy > SNAP_DIST * SNAP_DIST) return { x: pb[0], y: pb[1] };
+    return { x: lerp(pa[0], pb[0], k), y: lerp(pa[1], pb[1], k) };
+  }
+
+  function Buffer() {
+    this.items = [];          // [{ time, snap }] — time 오름차순
+  }
+
+  Buffer.prototype.push = function (tSec, snap) {
+    var n = this.items.length;
+    /* 늦게 도착한 옛날 것은 버린다. 최신을 밀어내면 화면이 되감긴다. */
+    if (n && tSec <= this.items[n - 1].time) return;
+    this.items.push({ time: tSec, snap: snap });
+    if (this.items.length > KEEP) this.items.splice(0, this.items.length - KEEP);
+  };
+
+  Buffer.prototype.size = function () { return this.items.length; };
+
+  Buffer.prototype.sample = function (nowSec) {
+    var it = this.items, n = it.length;
+    if (!n) return null;
+    if (n === 1) return { a: it[0].snap, b: it[0].snap, k: 0 };
+
+    var target = nowSec - DELAY;
+
+    if (target <= it[0].time) return { a: it[0].snap, b: it[0].snap, k: 0 };
+    if (target >= it[n - 1].time) {
+      var last = it[n - 1].snap;
+      return { a: last, b: last, k: 0 };
+    }
+
+    for (var i = n - 1; i > 0; i--) {
+      if (it[i - 1].time <= target && target <= it[i].time) {
+        var span = it[i].time - it[i - 1].time;
+        var k = span > 0 ? (target - it[i - 1].time) / span : 0;
+        return { a: it[i - 1].snap, b: it[i].snap, k: k };
+      }
+    }
+    return { a: it[0].snap, b: it[1].snap, k: 0 };
+  };
+
+  function correct(local, server, dt) {
+    var dx = server.x - local.x, dy = server.y - local.y;
+    if (dx * dx + dy * dy > SNAP_DIST * SNAP_DIST) return { x: server.x, y: server.y };
+    /* 지수 감쇠 — 프레임 시간이 들쭉날쭉해도 같은 속도로 붙는다 */
+    var k = 1 - Math.exp(-CORRECT_RATE * dt);
+    return { x: local.x + dx * k, y: local.y + dy * k };
+  }
+
+  global.Interp = {
+    DELAY: DELAY,
+    SNAP_DIST: SNAP_DIST,
+    CORRECT_RATE: CORRECT_RATE,
+    lerp: lerp,
+    between: between,
+    correct: correct,
+    Buffer: Buffer
+  };
+})(window);
+```
+
+- [ ] **Step 4: 통과를 확인한다**
+
+Run: `cd /c/Users/NAU/Desktop/Overworked && node --test test/interp.test.js`
+Expected: PASS — `17 pass, 0 fail`
+
+- [ ] **Step 5: 커밋**
+
+```bash
+cd /c/Users/NAU/Desktop/Overworked
+git add js/interp.js test/interp.test.js
+git commit -m "$(printf '%s\n' '보간과 예측: 10Hz 를 60Hz 로 편다' '' '이 게임에서 가장 미묘한 코드라 그리기에서 떼어내 순수 함수로 뒀다. 화면에' '섞으면 "왜 캐릭터가 떨리지"를 눈으로 쫓아야 하는데, 8명이 붙은 자리에서' '할 수 있는 일이 아니다.' '' '남의 캐릭터는 150ms 늦게 보여 준다. 스냅샷이 100ms 간격인데 가끔 누락되니,' '항상 과거를 그리면 손에 늘 두 개가 있어 그 사이를 부드럽게 지나간다.' '협동 게임이라 남이 150ms 늦게 보이는 건 아무도 눈치채지 못한다.' '' '내 캐릭터는 먼저 움직이고 호스트 값이 오면 초당 6배율로 당긴다. 기다리면' '조작이 먹통처럼 느껴지고, 순간이동시키면 벽에 밀릴 때마다 화면이 튄다.' '' '220px 넘게 벌어지면 둘 다 포기하고 그냥 옮긴다. 그 정도면 재입장이나' '호스트 승계라, 부드럽게 끌면 몇 초 동안 엉뚱한 데를 걸어간다.' '' 'Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
+```
+
+---
