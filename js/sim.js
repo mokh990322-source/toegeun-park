@@ -92,6 +92,29 @@
     };
   }
 
+  /* 호스트 승계 직후 딱 한 번 호출한다.
+     Snap 은 seq 를 담지 않는다(전송량 때문에 의도적으로 뺐다 — snap.js 참고).
+     그래서 스냅샷을 이어받은 새 호스트의 players[].seq 는 전부 0 이다. 그대로
+     tick 을 돌리면 각 플레이어가 매치 내내 보낸 입력 전체를 "새 액션"으로
+     오인해 그 자리에서 재생해 버린다 — 진행 중이던 작업이 순간 완성되고,
+     들고 있던 물건이 옆 기계로 빨려 들어가는 식의 치명적 버그(C1)다.
+     그래서 승계 시점에 각 플레이어의 seq 를 "그 사람의 현재 입력이 말하는
+     값"으로 맞춰 둔다 — 입력이 아직 없으면 0. 이러면 다음 tick 에서
+     want - have 가 0이 되어 아무것도 재생되지 않고, 그 이후의 진짜 새 입력만
+     정상적으로 처리된다. */
+  function adopt(state, inputs) {
+    var players = copyPlayers(state.players), pid;
+    for (pid in players) {
+      if (!Object.prototype.hasOwnProperty.call(players, pid)) continue;
+      var inp = (inputs && inputs[pid]) || null;
+      players[pid].seq = inp ? (inp.seq || 0) : 0;
+    }
+    return {
+      t: state.t, map: state.map, players: players,
+      machines: copyMachines(state.machines), done: state.done, goal: state.goal
+    };
+  }
+
   /* 액션 한 번. state 를 그 자리에서 고친다 — tick 안에서 이미 복사한 뒤라 안전하다. */
   function doAction(state, pid) {
     deps();
@@ -207,6 +230,7 @@
     create: create,
     join: join,
     leave: leave,
+    adopt: adopt,
     tick: tick
   };
 })(window);

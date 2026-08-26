@@ -230,6 +230,71 @@ test('wait 기계는 시간이 지나면 저절로 익는다', () => {
   assert.strictEqual(st.machines.u.item, 'uv');
 });
 
+/* ========== C1: 호스트 승계 시 과거 액션이 재생되면 안 된다 ==========
+   Snap.pack/unpack 은 seq 를 담지 않는다(전송량 때문에 의도적으로 뺐다).
+   그래서 승계한 새 호스트가 그대로 tick 을 돌리면 각 플레이어의 지금까지
+   입력 전체를 "새 액션"으로 오인해 재생해 버린다 — 이게 리뷰에서 발견된
+   치명적 버그다. world+stations+sim+snap 을 실제로 엮어야만 잡히는
+   버그라서, 단위별로는 다 통과하던 지난 리뷰 11번이 놓쳤다. */
+test('호스트 승계 후 같은 입력으로 틱해도 과거 액션이 재생되지 않는다 (Sim.adopt, C1)', () => {
+  const w = load(['world', 'stations', 'sim', 'snap']);
+  const S = w.Sim, P = w.Snap;
+  const map = bench(w);
+  let st = S.create(map, ['a']);
+  st.machines.m.item = 'ref';                 // 모델링 재료를 미리 올려 둔다
+  stand(st, 'a', 'm', S);
+
+  const work = w.Stations.TYPES.model.work;   // 6
+  let seq = 0;
+  const inp = { a: { x: 0, y: 0, seq: 0 } };
+  for (let i = 0; i < work - 1; i++) {         // 완성 한 걸음 전까지만 두드린다
+    seq += 1;
+    inp.a.seq = seq;
+    st = S.tick(st, inp, 1 / 60);
+  }
+  assert.strictEqual(st.machines.m.prog, work - 1, '준비: 완성 직전이어야 한다');
+  assert.strictEqual(st.machines.m.item, 'ref', '준비: 아직 완성되면 안 된다');
+
+  /* 스냅샷 왕복 — 새 호스트가 이 상태를 이어받는다 */
+  let adopted = P.unpack(P.pack(st), map);
+  assert.strictEqual(adopted.players.a.seq, 0, '전제 확인: 스냅샷에는 seq 가 없다');
+
+  adopted = S.adopt(adopted, inp);
+  assert.strictEqual(adopted.players.a.seq, seq, 'adopt 는 각 플레이어 seq 를 그 사람 현재 입력값으로 맞춘다');
+
+  /* 같은 입력으로 틱 — adopt 가 없었다면 seq(=work-1)만큼 재생돼 기계가 완성돼 버린다 */
+  const after = S.tick(adopted, inp, 1 / 60);
+  assert.strictEqual(after.machines.m.prog, work - 1, '재생으로 진행도가 더 올라가면 안 된다');
+  assert.strictEqual(after.machines.m.item, 'ref', '재생으로 완성되면 안 된다');
+  assert.strictEqual(after.players.a.hold, null, '재생으로 손에 뭔가 들리면 안 된다');
+  assert.strictEqual(after.done, 0, '재생으로 점수가 오르면 안 된다');
+
+  /* 진짜 새 액션(seq+1)은 여전히 먹혀야 한다 — adopt 가 입력을 먹통으로 만들면 안 된다 */
+  seq += 1;
+  const inp2 = { a: { x: 0, y: 0, seq: seq } };
+  const after2 = S.tick(after, inp2, 1 / 60);
+  assert.strictEqual(after2.machines.m.item, 'high', '새 액션 한 번이면 완성돼야 한다');
+  assert.strictEqual(after2.machines.m.prog, 0);
+});
+
+test('adopt 는 입력이 없는 플레이어의 seq 를 0 으로 둔다', () => {
+  const w = sim(), S = w.Sim;
+  let st = S.create(bench(w), ['a']);
+  st.players.a.seq = 0;
+  const adopted = S.adopt(st, {});             // 그 플레이어의 입력이 아직 안 왔다
+  assert.strictEqual(adopted.players.a.seq, 0);
+});
+
+test('adopt 는 원본 상태와 입력을 고치지 않는다', () => {
+  const w = sim(), S = w.Sim;
+  const st = S.create(bench(w), ['a']);
+  const inp = { a: { x: 0, y: 0, seq: 9 } };
+  const inpCopy = JSON.parse(JSON.stringify(inp));
+  S.adopt(st, inp);
+  assert.strictEqual(st.players.a.seq, 0, '원본 state 는 그대로여야 한다');
+  assert.deepStrictEqual(inp, inpCopy, '입력도 그대로여야 한다');
+});
+
 test('벽을 통과하지 못한다', () => {
   const w = sim(), S = w.Sim;
   let st = S.create(bench(w), ['a']);
