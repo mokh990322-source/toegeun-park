@@ -3084,6 +3084,51 @@ netWarn`
 `#netWarn` 은 연결이 3초 이상 끊겼을 때 뜨는 띠다. 아무 안내 없이 캐릭터가 멈추면
 다들 자기 PC 탓을 한다.
 
+- [ ] **Step 4b: 최종 리뷰가 남긴 두 가지를 먼저 처리한다**
+
+Task 1~10 전체 리뷰에서 나온 잔여 2건이다. 둘 다 Task 11 이 유일한 소비자라 여기서 함께 끝낸다.
+
+**(1) `Room.shouldClaim` 의 `lastEventMs: 0` 잠금 — 반드시 먼저 고친다.**
+
+`js/room.js` 의 귀먹음 판정이 이렇게 돼 있다:
+
+```js
+var iAmDeaf = (o.lastEventMs !== null && o.lastEventMs !== undefined) &&
+              (now - o.lastEventMs > HOST_TIMEOUT * 1000);
+```
+
+`0` 은 두 가드를 다 통과하고 `now - 0` 은 항상 3초를 넘으므로, `lastEventMs: 0` 이면
+**영원히 `'none'`** 이 나온다. 즉 호스트가 죽어도 아무도 승계하지 않는다. 확인:
+
+```
+lastEventMs 생략 : claim
+lastEventMs = 0  : none   <- 영원히 승계 불가
+```
+
+그런데 `0` 은 이 코드베이스가 "아직 없음"을 쓰는 방식이다 — 같은 옵션 객체의
+`claimedAtMs: 0`, `alive()` 의 `w.seen || 0`. 아래 Step 5 의 조립 코드에서
+`var lastEventAt = 0;` 이라고 쓰는 것이 가장 자연스러운데, 그러면 이 방은
+승계가 영영 안 된다. I3 수정이 막으려던 바로 그 사고다.
+
+고치는 법 — 한 줄:
+
+```js
+if (o.lastEventMs && now - o.lastEventMs > HOST_TIMEOUT * 1000) return 'none';
+```
+
+`test/room-host.test.js` 에 `lastEventMs: 0` 이 생략과 똑같이 동작한다는 테스트를 더한다.
+
+**(2) `MAX_ACTS` 클램프 테스트가 자기참조라 상수를 안 지킨다.**
+
+`test/sim.test.js` 의 단언이 `st.players.a.seq === S.MAX_ACTS` 라, 상수를 바꾸면
+기대값도 같이 바뀐다. 뮤테이션으로 확인한 결과 3, 4, 8, 999, 100000 전부 통과하고
+100001 과 클램프 삭제에서만 실패한다. 클램프가 있는지는 잡지만 값이 얼마인지는
+못 잡는다. 리터럴로 바꾼다:
+
+```js
+assert.strictEqual(st.players.a.seq, 8, '한 틱에 8개를 넘겨 처리하면 안 된다');
+```
+
 - [ ] **Step 5: 조립**
 
 `js/game.js` 가 하는 일 — 순서대로:
