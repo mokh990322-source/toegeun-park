@@ -215,6 +215,24 @@ test('join 이 플레이어를 넣고 leave 가 뺀다', () => {
   assert.strictEqual(st.players.b, undefined);
 });
 
+/* M6: join/leave 도 tick 과 같이 machines 를 복사해야 "원본을 고치지
+   않는다"는 계약이 세 함수 모두에서 일관되게 성립한다. */
+test('join 은 machines 를 복사한다 — 새 state 의 기계를 고쳐도 원본이 안 바뀐다', () => {
+  const w = sim(), S = w.Sim;
+  const st = S.create(bench(w), ['a']);
+  const st2 = S.join(st, 'b', 1);
+  st2.machines.m.item = 'burnt';
+  assert.strictEqual(st.machines.m.item, null, 'join 이 machines 를 참조로 넘기면 원본까지 바뀐다');
+});
+
+test('leave 는 machines 를 복사한다 — 새 state 의 기계를 고쳐도 원본이 안 바뀐다', () => {
+  const w = sim(), S = w.Sim;
+  const st = S.create(bench(w), ['a', 'b']);
+  const st2 = S.leave(st, 'b');
+  st2.machines.m.item = 'burnt';
+  assert.strictEqual(st.machines.m.item, null, 'leave 가 machines 를 참조로 넘기면 원본까지 바뀐다');
+});
+
 test('join 은 이미 있는 사람을 덮어쓰지 않는다', () => {
   const w = sim(), S = w.Sim;
   let st = S.create(bench(w), ['a']);

@@ -76,8 +76,13 @@
     var sp = state.map.spawns[spawnIndex % state.map.spawns.length] || { x: 100, y: 100 };
     players[pid] = { x: sp.x, y: sp.y, dir: 0, hold: null, tap: 0, seq: 0 };
     return {
+      /* machines 도 복사한다 — tick 은 이미 그렇게 하는데 join/leave 만 참조로
+         넘기면 "이 함수들은 원본을 고치지 않는다"는 계약이 셋 중 둘에서만
+         참이 된다. 지금 당장은 이 함수들이 machines 를 안 건드리니 티가
+         안 나지만, 나중에 누가 next.machines 를 그 자리에서 고치는 코드를
+         하나라도 여기 추가하면 state.machines 까지 같이 망가진다. */
       t: state.t, map: state.map, players: players,
-      machines: state.machines, done: state.done, goal: state.goal
+      machines: copyMachines(state.machines), done: state.done, goal: state.goal
     };
   }
 
@@ -88,7 +93,7 @@
     delete players[pid];
     return {
       t: state.t, map: state.map, players: players,
-      machines: state.machines, done: state.done, goal: state.goal
+      machines: copyMachines(state.machines), done: state.done, goal: state.goal
     };
   }
 
