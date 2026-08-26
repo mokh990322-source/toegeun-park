@@ -1175,3 +1175,339 @@ git commit -m "$(printf '%s\n' '맵과 충돌: 벽을 따라 미끄러진다' ''
 ```
 
 ---
+### Task 6: 공정 상태 기계
+
+물건이 어떤 기계에서 어떤 상태로 바뀌는지를 정하는 표와, 그 표를 읽는 함수들.
+**여기가 게임 규칙의 전부다.** 시뮬레이션도 그리기도 이 표를 읽기만 한다.
+
+1단계에서는 `ref → model → retopo → ship` 만 쓴다. 나머지 공정은 표에 미리
+넣어 두되 1스테이지 맵에 기계를 두지 않는다 — 2단계에서 맵만 늘리면 된다.
+
+**Files:**
+- Create: `js/stations.js`
+- Create: `test/stations.test.js`
+
+**Interfaces:**
+- Consumes: 없음
+- Produces:
+  - `window.Stations.TYPES` → `{ ref, model, retopo, uv, bake, rig, farm, ship, bin }`. 각 값은 `{ name, mode, accepts, gives, work, burn }`
+    - `mode`: `'source'`(집으면 나옴) / `'tap'`(연타) / `'wait'`(놓고 대기) / `'sink'`(넣으면 사라짐)
+    - `accepts`: 받아 주는 물건 상태 배열. `null` 이면 아무거나
+    - `gives`: 나오는 물건 상태. `null` 이면 없음
+    - `work`: `'tap'` 이면 필요한 누름 횟수, `'wait'` 이면 걸리는 초
+    - `burn`: `'wait'` 기계에서 다 익은 뒤 타기까지의 초. `0` 이면 안 탄다
+  - `window.Stations.get(type)` → 정의 객체 또는 `null`
+  - `window.Stations.canAccept(type, itemState)` → boolean
+  - `window.Stations.STAGE1_GOAL` → `{ need: 'low', count: 6 }` — 1스테이지는 로우폴리 6개 납품
+  - `window.Stations.step(machine, dt)` → 새 machine. `'wait'` 기계의 진행·완성·탐을 굴린다. **입력을 그 자리에서 고치지 않는다.**
+    - machine 모양: `{ id, type, item, prog }` (`item`은 물건 상태 문자열 또는 `null`)
+
+- [ ] **Step 1: 실패하는 테스트를 쓴다**
+
+`test/stations.test.js`:
+
+```js
+'use strict';
+const { test } = require('node:test');
+const assert = require('node:assert');
+const { load } = require('../testlib/load');
+
+function S() { return load('stations').Stations; }
+
+test('1단계에 필요한 기계가 정의돼 있다', () => {
+  const T = S().TYPES;
+  for (const k of ['ref', 'model', 'retopo', 'ship', 'bin']) {
+    assert.ok(T[k], k + ' 정의가 없다');
+    assert.ok(typeof T[k].name === 'string' && T[k].name.length > 0, k + ' 이름이 없다');
+  }
+});
+
+test('2단계용 기계도 미리 들어 있다', () => {
+  const T = S().TYPES;
+  for (const k of ['uv', 'bake', 'rig', 'farm']) assert.ok(T[k], k + ' 정의가 없다');
+});
+
+test('mode 는 정해진 넷 중 하나다', () => {
+  const T = S().TYPES;
+  for (const k in T) {
+    assert.ok(['source', 'tap', 'wait', 'sink'].indexOf(T[k].mode) >= 0, k + ' 의 mode 가 이상하다');
+  }
+});
+
+test('공정이 ref 에서 done 까지 한 줄로 이어진다', () => {
+  const T = S().TYPES;
+  assert.strictEqual(T.ref.gives, 'ref');
+  assert.deepStrictEqual(T.model.accepts, ['ref']);
+  assert.strictEqual(T.model.gives, 'high');
+  assert.deepStrictEqual(T.retopo.accepts, ['high']);
+  assert.strictEqual(T.retopo.gives, 'low');
+  assert.deepStrictEqual(T.uv.accepts, ['low']);
+  assert.strictEqual(T.uv.gives, 'uv');
+  assert.deepStrictEqual(T.bake.accepts, ['uv']);
+  assert.strictEqual(T.bake.gives, 'tex');
+  assert.deepStrictEqual(T.rig.accepts, ['tex']);
+  assert.strictEqual(T.rig.gives, 'rig');
+  assert.deepStrictEqual(T.farm.accepts, ['rig']);
+  assert.strictEqual(T.farm.gives, 'done');
+});
+
+test('폐기통은 아무거나 받고 아무것도 안 준다', () => {
+  const T = S().TYPES;
+  assert.strictEqual(T.bin.accepts, null);
+  assert.strictEqual(T.bin.gives, null);
+  assert.strictEqual(T.bin.mode, 'sink');
+});
+
+test('canAccept 는 받을 수 있는 것만 통과시킨다', () => {
+  const St = S();
+  assert.strictEqual(St.canAccept('model', 'ref'), true);
+  assert.strictEqual(St.canAccept('model', 'high'), false);
+  assert.strictEqual(St.canAccept('retopo', 'high'), true);
+  assert.strictEqual(St.canAccept('retopo', 'ref'), false);
+  assert.strictEqual(St.canAccept('bin', 'burnt'), true, '폐기통은 탄 것도 받는다');
+  assert.strictEqual(St.canAccept('bin', 'ref'), true);
+  assert.strictEqual(St.canAccept('없는기계', 'ref'), false);
+});
+
+test('ref 는 source 라 아무것도 안 받는다', () => {
+  const St = S();
+  assert.strictEqual(St.TYPES.ref.mode, 'source');
+  assert.strictEqual(St.canAccept('ref', 'ref'), false);
+  assert.strictEqual(St.canAccept('ref', 'low'), false);
+});
+
+test('1스테이지 목표는 로우폴리 6개', () => {
+  const G = S().STAGE1_GOAL;
+  assert.strictEqual(G.need, 'low');
+  assert.ok(G.count >= 4 && G.count <= 10, '목표가 4~10 사이여야 판이 지루하지도 길지도 않다');
+});
+
+test('ship 은 mode 가 sink 다', () => {
+  assert.strictEqual(S().TYPES.ship.mode, 'sink');
+});
+
+test('tap 기계는 누름 횟수가 있고 wait 기계는 초가 있다', () => {
+  const T = S().TYPES;
+  assert.ok(T.model.work >= 1, '연타 횟수가 1 이상이어야 한다');
+  assert.ok(T.retopo.work >= 1);
+  assert.ok(T.uv.work > 0, '대기 초가 0 보다 커야 한다');
+  assert.ok(T.bake.work > 0);
+});
+
+/* ---------- step ---------- */
+
+test('step 은 빈 기계를 그대로 둔다', () => {
+  const St = S();
+  const m = { id: 'uv1', type: 'uv', item: null, prog: 0 };
+  assert.deepStrictEqual(St.step(m, 1), m);
+});
+
+test('step 은 tap 기계를 시간으로 굴리지 않는다', () => {
+  const St = S();
+  const m = { id: 'model1', type: 'model', item: 'ref', prog: 0 };
+  assert.strictEqual(St.step(m, 5).prog, 0);
+});
+
+test('step 은 wait 기계의 진행을 올린다', () => {
+  const St = S();
+  const T = St.TYPES.uv;
+  const m = { id: 'uv1', type: 'uv', item: 'low', prog: 0 };
+  const out = St.step(m, T.work / 2);
+  assert.ok(out.prog > 0.4 && out.prog < 0.6, '절반쯤 와야 한다: ' + out.prog);
+  assert.strictEqual(out.item, 'low', '아직 안 끝났으면 상태 그대로');
+});
+
+test('step 은 다 되면 결과물로 바꾸고 진행을 1 로 둔다', () => {
+  const St = S();
+  const m = { id: 'uv1', type: 'uv', item: 'low', prog: 0 };
+  const out = St.step(m, St.TYPES.uv.work + 0.1);
+  assert.strictEqual(out.item, 'uv');
+  assert.strictEqual(out.prog, 1);
+});
+
+test('step 은 원본을 고치지 않는다', () => {
+  const St = S();
+  const m = { id: 'uv1', type: 'uv', item: 'low', prog: 0 };
+  St.step(m, 99);
+  assert.strictEqual(m.item, 'low');
+  assert.strictEqual(m.prog, 0);
+});
+
+test('베이커는 다 익은 뒤 방치하면 탄다', () => {
+  const St = S();
+  const T = St.TYPES.bake;
+  assert.ok(T.burn > 0, '베이커는 타야 한다');
+  let m = { id: 'bake1', type: 'bake', item: 'uv', prog: 0 };
+  m = St.step(m, T.work + 0.1);
+  assert.strictEqual(m.item, 'tex', '먼저 다 익는다');
+  m = St.step(m, T.burn + 0.1);
+  assert.strictEqual(m.item, 'burnt', '방치하면 탄다');
+});
+
+test('타지 않는 기계는 두어도 안 탄다', () => {
+  const St = S();
+  assert.strictEqual(St.TYPES.uv.burn, 0);
+  let m = { id: 'uv1', type: 'uv', item: 'low', prog: 0 };
+  m = St.step(m, 999);
+  m = St.step(m, 999);
+  assert.strictEqual(m.item, 'uv', 'UV 는 타지 않는다');
+});
+
+test('탄 것은 더 타지 않는다', () => {
+  const St = S();
+  let m = { id: 'bake1', type: 'bake', item: 'burnt', prog: 1 };
+  assert.strictEqual(St.step(m, 999).item, 'burnt');
+});
+```
+
+- [ ] **Step 2: 실패를 확인한다**
+
+Run: `cd /c/Users/NAU/Desktop/Overworked && node --test test/stations.test.js`
+Expected: FAIL — `ENOENT ... js/stations.js`
+
+- [ ] **Step 3: 구현**
+
+`js/stations.js`:
+
+```js
+/* ============================================================
+   오버워크드 — 공정 기계
+
+   이 표가 게임 규칙의 전부다. 시뮬레이션도 그리기도 여기를 읽기만 한다.
+   규칙을 바꾸고 싶으면 이 파일만 고친다.
+
+   ── 물건이 지나가는 길 ──────────────────────────────────
+   ref → high → low → uv → tex → rig → done
+   (레퍼런스 → 하이폴리 → 로우폴리 → 언랩 → 텍스처 → 리깅 → 렌더 완료)
+
+   burnt 는 어느 단계에서든 빠질 수 있는 막다른 상태다. 폐기통에 버려야 한다.
+
+   ── mode ────────────────────────────────────────────────
+   source  집으면 새 물건이 나온다 (레퍼런스 선반)
+   tap     물건을 놓고 연타하면 바뀐다 (모델링·리토폴·리깅)
+   wait    물건을 놓고 기다리면 바뀐다 (UV·베이크·렌더팜)
+   sink    넣으면 사라진다 (납품대·폐기통)
+
+   연타와 대기를 나눈 이유: 연타 기계 앞에는 사람이 붙어 있어야 하고 대기
+   기계는 놓고 딴 일을 하러 가야 한다. 이 둘이 섞여야 "지금 누가 어디에
+   있어야 하는가"를 계속 다시 판단하게 된다. 전부 연타면 각자 한 대씩 잡고
+   끝이고, 전부 대기면 할 일이 없다.
+
+   1단계는 ref → model → retopo → ship 만 쓴다. 나머지는 미리 넣어 두되
+   1스테이지 맵에 기계를 두지 않는다 — 2단계에서 맵만 늘리면 된다.
+   ============================================================ */
+(function (global) {
+  'use strict';
+
+  var TYPES = {
+    ref: {
+      name: '레퍼런스 선반', mode: 'source',
+      accepts: [], gives: 'ref', work: 0, burn: 0
+    },
+    model: {
+      name: '모델링 데스크', mode: 'tap',
+      accepts: ['ref'], gives: 'high', work: 6, burn: 0
+    },
+    retopo: {
+      name: '리토폴로지', mode: 'tap',
+      accepts: ['high'], gives: 'low', work: 8, burn: 0
+    },
+    uv: {
+      name: 'UV 전개기', mode: 'wait',
+      accepts: ['low'], gives: 'uv', work: 4.0, burn: 0
+    },
+    bake: {
+      /* 유일하게 타는 기계다. 놓고 잊으면 벌을 받는 자리가 하나는 있어야
+         "누가 베이커 좀 봐줘"라는 말이 나온다. */
+      name: '텍스처 베이커', mode: 'wait',
+      accepts: ['uv'], gives: 'tex', work: 5.0, burn: 6.0
+    },
+    rig: {
+      name: '리깅 데스크', mode: 'tap',
+      accepts: ['tex'], gives: 'rig', work: 10, burn: 0
+    },
+    farm: {
+      name: '렌더팜', mode: 'wait',
+      accepts: ['rig'], gives: 'done', work: 9.0, burn: 0
+    },
+    ship: {
+      name: '납품대', mode: 'sink',
+      accepts: null, gives: null, work: 0, burn: 0
+    },
+    bin: {
+      /* 아무거나 받는다. 탄 것을 버릴 데가 없으면 그 물건이 영원히 손에 남는다. */
+      name: '폐기통', mode: 'sink',
+      accepts: null, gives: null, work: 0, burn: 0
+    }
+  };
+
+  /* 1스테이지: 로우폴리 6개.
+     한 개당 모델링 6번 + 리토폴 8번 + 오가는 시간이라 2~3분쯤 걸린다.
+     처음 하는 사람들이 규칙을 익히기에 딱 그 정도다. */
+  var STAGE1_GOAL = { need: 'low', count: 6 };
+
+  function get(type) {
+    return Object.prototype.hasOwnProperty.call(TYPES, type) ? TYPES[type] : null;
+  }
+
+  function canAccept(type, itemState) {
+    var d = get(type);
+    if (!d) return false;
+    if (d.mode === 'source') return false;      // 선반에는 물건을 못 올린다
+    if (d.accepts === null) return true;        // 납품대·폐기통은 아무거나
+    return d.accepts.indexOf(itemState) >= 0;
+  }
+
+  /* wait 기계의 시간을 굴린다. 원본을 고치지 않고 새 객체를 돌려준다 —
+     시뮬레이션 상태를 그 자리에서 바꾸면 "언제 바뀌었지"를 못 쫓는다. */
+  function step(machine, dt) {
+    var d = get(machine.type);
+    if (!d || d.mode !== 'wait') return machine;
+    if (machine.item === null || machine.item === undefined) return machine;
+    if (machine.item === 'burnt') return machine;          // 더 탈 것이 없다
+
+    var prog = machine.prog || 0;
+
+    /* 아직 익는 중 */
+    if (machine.item !== d.gives) {
+      prog += dt / d.work;
+      if (prog < 1) return { id: machine.id, type: machine.type, item: machine.item, prog: prog };
+      return { id: machine.id, type: machine.type, item: d.gives, prog: 1 };
+    }
+
+    /* 다 익었다. 타는 기계면 방치 시간을 잰다. */
+    if (d.burn <= 0) return machine;
+    prog += dt / d.burn;
+    if (prog < 2) return { id: machine.id, type: machine.type, item: machine.item, prog: prog };
+    return { id: machine.id, type: machine.type, item: 'burnt', prog: 2 };
+  }
+
+  global.Stations = {
+    TYPES: TYPES,
+    STAGE1_GOAL: STAGE1_GOAL,
+    get: get,
+    canAccept: canAccept,
+    step: step
+  };
+})(window);
+```
+
+> **`prog` 가 두 가지 뜻을 겸한다.** 익는 동안은 0~1(진행률), 다 익은 뒤에는
+> 1~2(타기까지의 진행률)다. 값 하나로 두 단계를 표현하면 스냅샷에 숫자를 하나만
+> 실어도 되고, 그리는 쪽은 `prog > 1` 인지만 보면 "타는 중"을 알 수 있다.
+> 이 규칙을 모르고 `prog` 를 건드리면 다 익은 물건이 갑자기 덜 익은 상태가 된다.
+
+- [ ] **Step 4: 통과를 확인한다**
+
+Run: `cd /c/Users/NAU/Desktop/Overworked && node --test test/stations.test.js`
+Expected: PASS — `18 pass, 0 fail`
+
+- [ ] **Step 5: 커밋**
+
+```bash
+cd /c/Users/NAU/Desktop/Overworked
+git add js/stations.js test/stations.test.js
+git commit -m "$(printf '%s\n' '공정 상태 기계: 게임 규칙을 표 하나에 모은다' '' '시뮬레이션도 그리기도 이 표를 읽기만 한다. 규칙을 바꾸려면 이 파일만 고친다.' '' '연타(tap)와 대기(wait)를 나눈 이유가 있다. 연타 기계 앞에는 사람이 붙어' '있어야 하고 대기 기계는 놓고 딴 일을 하러 가야 한다. 이 둘이 섞여야 "지금' '누가 어디 있어야 하는가"를 계속 다시 판단하게 된다. 전부 연타면 각자 한 대씩' '잡고 끝이고, 전부 대기면 할 일이 없다.' '' 'prog 는 익는 동안 0~1, 다 익은 뒤 1~2(타기까지)로 두 뜻을 겸한다. 값 하나면' '스냅샷에 숫자를 하나만 실어도 되고, 그리는 쪽은 prog > 1 만 보면 된다.' '' '2단계용 기계(uv/bake/rig/farm)도 표에 미리 넣었다. 맵에 두지만 않으면' '1스테이지에는 안 나온다.' '' 'Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
+```
+
+---
