@@ -105,6 +105,20 @@
 
     if (o.host === o.me) return 'none';               // 이미 내가 호스트
 
+    /* hostDead 는 "틱이 안 늘었다"만 본다. 그런데 틱은 이 클라이언트가 받는
+       스트림을 타고 오므로, 내 스트림이 끊겨도 똑같이 안 늘어난다. 그러면
+       멀쩡한 호스트를 죽었다고 오판해 내가 호스트를 자처하는데, 실제로는
+       아무 입력도 못 받으면서 시뮬레이션만 도는 좀비 호스트가 된다.
+       lastEventMs 는 스냅샷이든 heartbeat 든 이 스트림에 뭐라도 마지막으로
+       도착한 로컬 시각이다 — 8명이 2초마다 heartbeat 를 보내는 방이라면
+       방이 살아 있는 한 초당 여러 번은 뭔가 온다. 그게 HOST_TIMEOUT 만큼
+       조용하면 조용한 건 호스트가 아니라 나 자신이니 나서면 안 된다.
+       값이 없으면(옛 호출부, 아직 한 번도 못 잼) 안 죽은 것으로 본다 —
+       그래야 이 정보가 없다는 이유로 승계가 영영 막히지 않는다. */
+    var iAmDeaf = (o.lastEventMs !== null && o.lastEventMs !== undefined) &&
+                  (now - o.lastEventMs > HOST_TIMEOUT * 1000);
+    if (iAmDeaf) return 'none';
+
     var list = alive(o.who, now);
     var noSnapshotYet = (o.lastTick === null || o.lastTick === undefined);
 

@@ -190,6 +190,50 @@ test('호스트 failover 는 SEEN_TIMEOUT 에 종속되지 않는다', () => {
   assert.strictEqual(r.shouldClaim(o), 'claim');
 });
 
+/* ========== I3: 내 스트림이 죽은 것과 호스트가 죽은 것을 구분한다 ========== */
+
+test('호스트는 멀쩡한데 내 스트림이 끊겼으면 나서지 않는다', () => {
+  const r = R();
+  const ms = r.HOST_TIMEOUT * 1000;
+  // 호스트는 heartbeat 도 최근이고(1초 전), 실제로는 계속 틱을 돌리는 중이라고 하자.
+  // 하지만 이 클라이언트는 스트림이 3.5초째 끊겨서 lastChangeMs 도 lastEventMs 도
+  // 그만큼 낡았다 — 겉보기엔 "호스트가 죽었다"와 똑같이 보인다.
+  const w = who({ a: { join: 1, agoSec: 1 }, b: { join: 2, agoSec: 1 } });
+  const o = {
+    me: 'b', host: 'a',
+    who: w,
+    lastTick: 50, lastChangeMs: NOW - ms - 500, lastEventMs: NOW - ms - 500,
+    nowMs: NOW, claimedAtMs: 0
+  };
+  assert.strictEqual(r.shouldClaim(o), 'none', '내가 못 듣는 것이지 호스트가 죽은 게 아니다');
+});
+
+test('호스트가 진짜 죽었고 내 스트림은 멀쩡하면 여전히 나선다', () => {
+  const r = R();
+  const ms = r.HOST_TIMEOUT * 1000;
+  const w = who({ a: { join: 1, agoSec: 1 }, b: { join: 2, agoSec: 1 } });
+  const o = {
+    me: 'b', host: 'a',
+    who: w,
+    lastTick: 50, lastChangeMs: NOW - ms - 500, lastEventMs: NOW - 100,   // 방금도 뭔가 받았다
+    nowMs: NOW, claimedAtMs: 0
+  };
+  assert.strictEqual(r.shouldClaim(o), 'claim');
+});
+
+test('lastEventMs 가 없으면(옛 호출부) 예전처럼 동작한다', () => {
+  const r = R();
+  const ms = r.HOST_TIMEOUT * 1000;
+  const w = who({ a: { join: 1, agoSec: 1 }, b: { join: 2, agoSec: 1 } });
+  const o = {
+    me: 'b', host: 'a',
+    who: w,
+    lastTick: 50, lastChangeMs: NOW - ms - 500,
+    nowMs: NOW, claimedAtMs: 0
+  };
+  assert.strictEqual(r.shouldClaim(o), 'claim', 'lastEventMs 없다고 승계가 막히면 안 된다');
+});
+
 test('틱이 흐르고 있으면 seen 이 낡아도 호스트는 산다', () => {
   const r = R();
   // 호스트 a의 heartbeat는 99초 전 (완전히 낡음)
