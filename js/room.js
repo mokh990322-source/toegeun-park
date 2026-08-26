@@ -117,6 +117,13 @@
        이때는 who 목록으로만 판단한다. 호스트가 목록에 있으면 가만히 둔다. */
     if (noSnapshotYet && list.indexOf(o.host) >= 0) return 'none';
 
+    /* 호스트가 죽었으면(틱이 멈췄으면) 그 호스트를 후보 목록에서 빼고 본다.
+       alive() 는 heartbeat 로 필터하는데, heartbeat 는 틱보다 느리게 낡는다.
+       그래서 죽은 호스트도 아직 alive() 에 남아 있을 수 있다. */
+    if (!noSnapshotYet && hostDead(o.lastTick, o.lastChangeMs, now)) {
+      list = list.filter(function (pid) { return pid !== o.host; });
+    }
+
     return (list.length && list[0] === o.me) ? 'claim' : 'none';
   }
 
