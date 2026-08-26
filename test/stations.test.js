@@ -149,3 +149,42 @@ test('탄 것은 더 타지 않는다', () => {
   let m = { id: 'bake1', type: 'bake', item: 'burnt', prog: 1 };
   assert.strictEqual(St.step(m, 999).item, 'burnt');
 });
+
+/* ---------- dt 입자성 테스트 ---------- */
+
+test('한 번에 주나 잘게 쪼개나 같은 결과다 (베이커의 요리→타기 경계)', () => {
+  const St = S();
+  const T = St.TYPES.bake;
+  const totalDt = T.work + T.burn + 1;  // 요리 + 타기를 넘는 시간
+
+  // 한 번에 준다
+  let m1 = { id: 'bake1', type: 'bake', item: 'uv', prog: 0 };
+  m1 = St.step(m1, totalDt);
+
+  // 잘게 쪼갠다 (10번)
+  let m2 = { id: 'bake2', type: 'bake', item: 'uv', prog: 0 };
+  for (let i = 0; i < 10; i++) {
+    m2 = St.step(m2, totalDt / 10);
+  }
+
+  // 둘이 같은 상태에 도달해야 한다
+  assert.strictEqual(m1.item, m2.item, 'item 이 달라졌다');
+  assert.strictEqual(m1.prog, m2.prog, 'prog 가 달라졌다');
+  assert.strictEqual(m1.item, 'burnt', '충분한 시간이 주어지면 타야 한다');
+});
+
+test('베이커에 엄청 큰 dt 는 탄다', () => {
+  const St = S();
+  const m = { id: 'bake1', type: 'bake', item: 'uv', prog: 0 };
+  const result = St.step(m, 1e6);
+  assert.strictEqual(result.item, 'burnt', '아무리 큰 dt 도 요리 다음은 탄다');
+  assert.strictEqual(result.prog, 2);
+});
+
+test('타지 않는 기계에 엄청 큰 dt 는 요리만 다 하고 멈춘다', () => {
+  const St = S();
+  const m = { id: 'uv1', type: 'uv', item: 'low', prog: 0 };
+  const result = St.step(m, 1e6);
+  assert.strictEqual(result.item, 'uv', 'UV 는 절대 타지 않는다');
+  assert.strictEqual(result.prog, 1, '요리가 끝났으니 진행도는 1');
+});

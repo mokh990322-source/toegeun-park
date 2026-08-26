@@ -87,7 +87,10 @@
   }
 
   /* wait 기계의 시간을 굴린다. 원본을 고치지 않고 새 객체를 돌려준다 —
-     시뮬레이션 상태를 그 자리에서 바꾸면 "언제 바뀌었지"를 못 쫓는다. */
+     시뮬레이션 상태를 그 자리에서 바꾸면 "언제 바뀌었지"를 못 쫓는다.
+
+     큰 dt가 요리와 타기 두 단계를 넘나들면, 남은 시간을 다음 단계에 이월한다.
+     그래야 한 번에 줘진 dt와 잘게 쪼갠 여러 dt가 같은 결과에 도달한다. */
   function step(machine, dt) {
     var d = get(machine.type);
     if (!d || d.mode !== 'wait') return machine;
@@ -100,7 +103,15 @@
     if (machine.item !== d.gives) {
       prog += dt / d.work;
       if (prog < 1) return { id: machine.id, type: machine.type, item: machine.item, prog: prog };
-      return { id: machine.id, type: machine.type, item: d.gives, prog: 1 };
+
+      // 요리가 끝났다. 타는 기계면 남은 시간을 타기 단계에 적용한다.
+      if (d.burn <= 0) return { id: machine.id, type: machine.type, item: d.gives, prog: 1 };
+
+      // 남은 진행도를 초로 변환해서 타기에 적용
+      var remainingTime = (prog - 1) * d.work;
+      prog = 1 + remainingTime / d.burn;
+      if (prog < 2) return { id: machine.id, type: machine.type, item: d.gives, prog: prog };
+      return { id: machine.id, type: machine.type, item: 'burnt', prog: 2 };
     }
 
     /* 다 익었다. 타는 기계면 방치 시간을 잰다. */
