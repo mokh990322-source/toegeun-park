@@ -2945,3 +2945,378 @@ git commit -m "$(printf '%s\n' '보간과 예측: 10Hz 를 60Hz 로 편다' '' '
 ```
 
 ---
+### Task 11: 화면 — 스프라이트·그리기·UI·조립
+
+지금까지 만든 순수 로직에 눈과 손을 붙인다. 여기부터는 Node 로 검증할 수 없으므로
+**브라우저에서 값으로 확인**한다. 눈으로 "잘 되네" 하지 말고 숫자를 찍어서 본다.
+
+이 태스크는 파일이 다섯 개라 크다. 하지만 이 중 어느 하나만 있어도 화면에 아무것도
+안 뜨므로 나눌 수 없다. **한 태스크의 끝은 "실제로 혼자 한 판 굴러간다"이다.**
+
+**Files:**
+- Create: `js/sprite.js` — 캐릭터 그리기 (탑다운)
+- Create: `js/view.js` — 맵·기계·물건·캐릭터를 캔버스에 그린다
+- Create: `js/hud.js` — DOM UI (시작 화면·대기실·상단바)
+- Create: `js/game.js` — 루프와 조립, 네트워크 연결, 호스트 승계 실행
+- Create: `index.html`
+- Create: `img/face/` — 퇴근의 계단에서 얼굴 사진 복사
+
+**Interfaces:**
+- Consumes: `World`, `Stations`, `Sim`, `Snap`, `Interp`, `Net`, `Room`
+- Produces: 브라우저에서 도는 게임. `window.game` 에 아래를 노출한다 — Step 6·7 과
+  Task 12 의 확인이 전부 이 값들을 읽는다. 안 만들면 확인이 헛돈다.
+
+  | 이름 | 뜻 |
+  |---|---|
+  | `game.pid` | 내 플레이어 id |
+  | `game.code` | 지금 방 코드 |
+  | `game.meta` | `rooms/<code>/meta` 사본 (`host`, `phase`, `stage`) |
+  | `game.who` | `rooms/<code>/who` 사본 |
+  | `game.state` | 지금 그리고 있는 세계 (호스트면 시뮬레이션 원본, 아니면 unpack 결과) |
+  | `game.isHost()` | `meta.host === pid` |
+  | `game.scale` | 지금 화면 배율 |
+  | `game.fps` | 최근 1초 평균 프레임 수 |
+  | `game.writeFail` | 쓰기 실패 누적 횟수 (`Net.put` 이 `ok:false` 로 온 수) |
+  | `game.lastSnapBytes` | 마지막으로 올린 스냅샷 크기 (호스트만) |
+
+**스크립트 로드 순서** (`index.html` 마지막에, 이 순서 그대로):
+
+```html
+<script src="js/cloud-config.js"></script>
+<script src="js/net.js"></script>
+<script src="js/room.js"></script>
+<script src="js/world.js"></script>
+<script src="js/stations.js"></script>
+<script src="js/sim.js"></script>
+<script src="js/snap.js"></script>
+<script src="js/interp.js"></script>
+<script src="js/sprite.js"></script>
+<script src="js/view.js"></script>
+<script src="js/hud.js"></script>
+<script src="js/game.js"></script>
+```
+
+순서를 바꾸면 `sim.js` 가 `World` 를 못 찾는 식으로 조용히 깨진다. `game.js` 는
+반드시 마지막이다.
+
+**설계 지침 — 이걸 어기면 나중에 못 고친다:**
+
+- `view.js` 는 **판정을 하지 않는다.** 상태를 받아 그리기만 한다. "이 사람이 기계에
+  닿았나"를 view 에서 다시 계산하면 호스트와 답이 갈린다. 필요한 건 전부 스냅샷에 있다.
+- `game.js` 만 네트워크를 만진다. `sim.js` 는 호스트일 때만 돌린다.
+- 캔버스는 두 장이다. `#floor`(맵·기계 — 바뀔 때만 다시 그린다)와 `#actors`(캐릭터·물건 —
+  매 프레임). 맵을 60Hz 로 다시 그리면 8명 붙었을 때 느린 PC 가 먼저 죽는다.
+- 스케일은 `min(innerWidth/1280, innerHeight/720)` 로 잡고 가운데 정렬한다. 좌표는
+  끝까지 디자인 좌표로 두고 그리기 직전에만 곱한다.
+
+- [ ] **Step 1: 얼굴 사진을 가져온다**
+
+```bash
+mkdir -p /c/Users/NAU/Desktop/Overworked/img/face
+cp /c/Users/NAU/Desktop/StairGame/img/face/* /c/Users/NAU/Desktop/Overworked/img/face/
+ls /c/Users/NAU/Desktop/Overworked/img/face/ | head
+```
+
+Expected: 파일 8개. 퇴근의 계단과 같은 규칙(앞자리 숫자 = 캐릭터 번호)을 쓴다.
+
+> **공개 저장소 주의.** 이 저장소도 GitHub Pages 로 올리면 팀원 얼굴 사진이 공개된다.
+> 퇴근의 계단에서 이미 같은 조건으로 올라가 있으므로 새로 생기는 위험은 아니지만,
+> 저장소를 비공개로 두고 싶다면 지금이 정할 시점이다.
+
+- [ ] **Step 2: 캐릭터 스프라이트를 만든다**
+
+`js/sprite.js`. 퇴근의 계단 `player.js` 에서 가져올 것과 새로 쓸 것:
+
+- **가져온다:** 얼굴 사진 로딩·픽셀화(`faceCanvas`, 26px 로 줄였다 키우기), 장비 파츠
+  좌표계 개념(`[가운데x, 아래y, 너비, 높이, 색]`), `Shop` 에서 장착 정보 읽기
+- **새로 쓴다:** 4방향(아래/왼/오/위) 몸통. 탑다운이라 위에서 볼 때 어깨가 보이고,
+  뒤를 볼 때는 얼굴 대신 뒤통수를 그린다
+
+크기는 `World.R`(14) 의 두 배쯤인 **가로 32 · 세로 40** 으로 잡는다. 8명이 한 화면에
+있을 때 서로 가리지 않는 크기다.
+
+필수 함수:
+
+```js
+window.Sprite.draw(ctx, x, y, dir, charIndex, gear, holdItem, scale)
+window.Sprite.drawItem(ctx, x, y, itemState, scale)   // 손에 든 것 · 기계 위의 것
+window.Sprite.preview(ctx, w, h, charIndex, gear)     // 대기실 미리보기
+```
+
+`holdItem` 이 있으면 머리 위에 물건을 얹어 그린다 — 오버쿡드처럼 누가 뭘 들고
+있는지 멀리서 보여야 "그거 이리 줘"가 된다.
+
+- [ ] **Step 3: 물건 색을 정한다**
+
+물건은 작은 아이콘이라 **색만으로 구분돼야 한다.** 이름표를 붙이면 8명이 뛰어다닐 때
+읽을 수 없다.
+
+| 상태 | 색 | 모양 |
+|---|---|---|
+| `ref` | `#9b8fd0` (연보라) | 종이 뭉치 |
+| `high` | `#f83fa8` (마젠타) | 울퉁불퉁한 덩어리 |
+| `low` | `#3ce8d4` (시안) | 각진 다면체 |
+| `uv` | `#ffd93d` (노랑) | 펼친 격자 |
+| `tex` | `#ff7a3a` (주황) | 체크무늬 |
+| `rig` | `#a35cff` (보라) | 뼈대 |
+| `done` | `#ffffff` (흰색) | 반짝이는 정육면체 |
+| `burnt` | `#3a3340` (검정) | 연기 |
+
+1단계에서는 `ref`, `high`, `low` 셋만 나온다. 나머지는 2단계에서 쓴다.
+
+- [ ] **Step 4: 화면 구성**
+
+`index.html`. 퇴근의 계단의 Y2K 네온 픽셀 톤을 그대로 쓴다 — 같은 팀이 하는 연작이라
+분위기가 이어져야 한다. `--bg-0:#0b0720` / `--cyan:#3ce8d4` / `--pink:#f83fa8` /
+`--yellow:#ffd93d` / `--purple:#a35cff` 토큰을 그대로 가져온다.
+
+화면은 셋:
+
+1. **시작** — 닉네임, 캐릭터 8명 고르기, `[방 만들기]` / 코드 입력 + `[입장]`
+2. **대기실** — 방 코드 크게, 참가자 목록(호스트에 왕관), 호스트만 `[시작]`,
+   `[코드 복사]`(URL 째로 — 메신저에 붙여 넣으면 바로 들어온다)
+3. **게임** — 상단에 목표 진행(`3 / 6`), 우측 상단에 참가자, 캔버스 두 장
+
+필수 id: `nick, charPick, btnCreate, roomInput, btnJoin, screenStart, screenLobby,
+screenGame, roomCode, btnCopyLink, whoList, btnStart, goalNow, goalNeed, floor, actors,
+netWarn`
+
+`#netWarn` 은 연결이 3초 이상 끊겼을 때 뜨는 띠다. 아무 안내 없이 캐릭터가 멈추면
+다들 자기 PC 탓을 한다.
+
+- [ ] **Step 5: 조립**
+
+`js/game.js` 가 하는 일 — 순서대로:
+
+```js
+/* 1. 입장 */
+   pid = 'p' + Math.random().toString(36).slice(2, 9);   // 방 안에서만 유일하면 된다
+   Net.put('rooms/'+code+'/who/'+pid, {name, char, gear, join: Date.now(), seen: Date.now()});
+
+/* 2. 구독 — 방 전체를 하나로 본다. 경로를 나눠 걸면 연결이 늘고 순서가 꼬인다 */
+   Net.watch('rooms/'+code, onRoom);
+
+/* 3. 매 프레임 (60Hz) */
+   - 키보드 → 방향(x,y) + 액션 seq
+   - 입력이 바뀌었으면 Net.put('rooms/'+code+'/in/'+pid, {x,y,act,seq})   ← 초당 8회로 제한
+   - 내가 호스트면: Sim.tick(state, 모든입력, dt)
+   - 아니면: Interp 버퍼에서 뽑아 그림
+   - 내 캐릭터는 항상 로컬 예측 + Interp.correct 로 보정
+   - View.draw()
+
+/* 4. 10Hz (호스트만) */
+   Net.put('rooms/'+code+'/st', Snap.pack(state))
+
+/* 5. 2초마다 (모두) */
+   Net.put('rooms/'+code+'/who/'+pid+'/seen', Date.now())   ← 살아 있다는 표시
+
+/* 6. 1초마다 (모두) — 호스트 승계 */
+   var act = Room.shouldClaim({me: pid, host: meta.host, who: who,
+                               lastTick: lastTick, lastChangeMs: lastChangeMs,
+                               nowMs: Date.now(), claimedAtMs: claimedAt});
+   if (act === 'claim') { claimedAt = Date.now();
+                          Net.put('rooms/'+code+'/meta/host', pid); }
+   if (act === 'yield') { claimedAt = 0; }
+   if (act === 'none' && claimedAt) claimedAt = 0;
+```
+
+> **입력 쓰기를 초당 8회로 제한하는 이유:** 방향키를 붙잡고 있으면 값이 안 바뀌므로
+> 쓰기가 없다. 하지만 대각선으로 비비면 초당 60번 바뀔 수 있다. 그러면 8명이 초당
+> 480번 쓰게 되어 스냅샷보다 입력이 더 무거워진다. 8회면 사람 손보다 빠르다.
+
+> **`seen` 갱신을 2초로 잡은 이유:** `SEEN_TIMEOUT`(10초)의 5분의 1이다. 한두 번
+> 놓쳐도 살아 있는 사람이 죽은 것으로 판정되지 않는다.
+
+- [ ] **Step 6: 혼자서 한 판 굴려 본다**
+
+```bash
+cd /c/Users/NAU/Desktop/Overworked && python -m http.server 8895 --directory .
+```
+
+브라우저에서 `http://localhost:8895` — 닉네임 넣고 `[방 만들기]` → `[시작]`.
+콘솔에서 값으로 확인한다:
+
+```js
+const g = window.game;
+JSON.stringify({
+  나: g.pid, 호스트: g.meta && g.meta.host, 내가호스트: g.isHost(),
+  방: g.code, 참가자: Object.keys(g.who || {}).length,
+  캔버스: [floor.width, actors.width],
+  스케일: g.scale,
+  내위치: g.state && g.state.players[g.pid] && [Math.round(g.state.players[g.pid].x), Math.round(g.state.players[g.pid].y)],
+  기계수: g.state && Object.keys(g.state.machines).length
+});
+```
+
+Expected: `내가호스트: true`, `참가자: 1`, `기계수: 5`, 스케일이 0보다 큼
+
+그다음 **직접 플레이해서** 확인한다 (이건 눈으로 봐야 한다):
+1. 방향키로 움직인다 — 즉각 반응하고 벽에 붙으면 미끄러진다
+2. 왼쪽 위 선반에 가서 Space → 머리 위에 연보라 물건이 얹힌다
+3. 오른쪽 위 모델링대에 가서 Space(놓기) → Shift 6번 → 마젠타로 바뀐다
+4. Space 로 집어서 왼쪽 아래 리토폴로 → Shift 8번 → 시안으로
+5. 오른쪽 아래 납품대에 Space → 상단 숫자가 `1 / 6` 이 된다
+
+한 바퀴가 안 돌면 그 지점의 규칙을 Task 6·7 테스트로 다시 확인한다. 화면 문제인지
+규칙 문제인지 먼저 갈라야 한다.
+
+- [ ] **Step 7: 두 창으로 붙어 본다**
+
+같은 브라우저에서 창을 두 개 띄우고 같은 방 코드로 들어간다. 한쪽은 시크릿 창을 쓴다
+(localStorage 가 갈려야 다른 사람으로 잡힌다).
+
+확인:
+- 두 캐릭터가 서로의 화면에 보인다
+- 한쪽이 움직이면 다른 쪽에서 **부드럽게** 따라온다 (뚝뚝 끊기면 `Interp.DELAY` 를 본다)
+- 한쪽이 든 물건이 다른 쪽 화면에서도 그 사람 머리 위에 있다
+- **호스트 창을 닫으면** 3~4초 뒤 남은 창이 호스트가 되고 게임이 계속된다
+  ← 이게 이 태스크에서 가장 중요한 확인이다
+
+```js
+/* 승계 확인 — 남은 창에서 */
+setInterval(() => console.log(Date.now(), '호스트:', game.meta.host, '나:', game.pid, '내가:', game.isHost()), 1000);
+```
+
+- [ ] **Step 8: 커밋**
+
+```bash
+cd /c/Users/NAU/Desktop/Overworked
+git add js/sprite.js js/view.js js/hud.js js/game.js index.html img/
+git commit -m "$(printf '%s\n' '화면: 스프라이트 · 그리기 · UI · 조립' '' 'view 는 판정을 하지 않는다. "이 사람이 기계에 닿았나"를 view 에서 다시' '계산하면 호스트와 답이 갈린다. 필요한 건 전부 스냅샷에 있다.' '' '캔버스를 두 장으로 나눴다. 맵과 기계는 바뀔 때만, 캐릭터와 물건만 매 프레임' '그린다. 맵을 60Hz 로 다시 그리면 8명 붙었을 때 느린 PC 가 먼저 죽는다.' '' '물건은 색만으로 구분되게 했다. 이름표를 붙이면 8명이 뛰어다닐 때 못 읽는다.' '들고 있는 것은 머리 위에 얹어 멀리서도 보이게 했다 — 그래야 "그거 이리 줘"가' '된다.' '' '입력 쓰기를 초당 8회로 묶었다. 대각선으로 비비면 초당 60번 바뀔 수 있는데,' '그러면 8명이 초당 480번 쓰게 되어 입력이 스냅샷보다 무거워진다.' '' 'Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
+```
+
+---
+
+### Task 12: 팀원 8명 플레이테스트와 실측
+
+**이 태스크가 1단계의 목적이다.** 앞의 열한 개는 여기 도달하기 위한 것이다.
+
+**Files:**
+- Create: `docs/playtest-1.md` — 무엇이 터졌고 무엇이 재미없었는지
+- Modify: `docs/superpowers/specs/2026-08-26-overworked-design.md` — 실측값 반영
+
+- [ ] **Step 1: 배포한다**
+
+```bash
+cd /c/Users/NAU/Desktop/Overworked
+git remote add origin https://github.com/mokh990322-source/overworked.git
+git push -u origin main
+```
+
+GitHub 저장소 설정 → Pages → Source: `main` / `/ (root)` → 저장.
+`https://mokh990322-source.github.io/overworked/` 가 뜨는지 확인한다.
+
+> **지갑 공유가 되는지 여기서 확인한다.** 퇴근의 계단에서 코인을 번 브라우저로
+> 이 주소에 들어가 `localStorage.getItem('toegeun-stairs-coin')` 이 그 값인지 본다.
+> 같은 오리진이어야 하므로 저장소 이름과 무관하게 되어야 한다. 안 되면 스펙 6.1 이
+> 틀린 것이니 바로 고친다.
+
+- [ ] **Step 2: 부르기 전에 혼자 마지막 점검**
+
+```bash
+cd /c/Users/NAU/Desktop/Overworked && node --test
+```
+
+Expected: 전부 통과. 하나라도 깨졌으면 부르지 않는다.
+
+- [ ] **Step 3: 팀원들을 부른다**
+
+방을 만들고 URL 을 그대로 메신저에 붙인다 (`...#R=ABCD` 형태라 클릭하면 코드가 채워진다).
+
+한 판 돌리는 동안 **호스트 창에서** 이걸 켜 두고 로그를 남긴다:
+
+```js
+window.__log = [];
+setInterval(() => {
+  __log.push({
+    t: Date.now(), 인원: Object.keys(game.who || {}).length,
+    fps: game.fps, 호스트: game.meta.host,
+    쓰기실패: game.writeFail, 스냅샷바이트: game.lastSnapBytes
+  });
+}, 1000);
+/* 끝나고: copy(JSON.stringify(__log)) */
+```
+
+- [ ] **Step 4: 무엇을 보는가**
+
+기술:
+- 인원이 8명일 때 호스트 fps 가 50 아래로 떨어지는가
+- 쓰기 실패가 나는가 (`writeFail` 이 계속 오르면 규칙이나 한도 문제)
+- 스냅샷 크기가 예측(271 bytes)과 맞는가
+- 튕긴 사람이 다시 들어와서 이어서 하는가
+- 호스트가 나갔을 때 승계가 실제로 되는가
+
+재미 — **이게 더 중요하다:**
+- 8명이 실제로 갈라지는가, 아니면 다 같이 한 기계 앞에 몰리는가
+- 말을 하게 되는가. 조용하면 협동 게임이 아니다
+- 목표 6개가 너무 쉽거나 어려운가
+- 통로에서 서로 막히는 게 웃긴가 짜증나는가 (이 경계가 이 게임의 전부다)
+
+- [ ] **Step 5: 기록하고 스펙을 고친다**
+
+`docs/playtest-1.md` 에 위 항목별 결과를 적는다. 추측이 아니라 본 것만 적는다.
+
+스펙에서 틀린 것으로 드러난 곳을 고친다. 특히:
+- 3.5 전송량 (실제 측정치로)
+- 4.3 협동 강제 장치 (몰림이 실제로 생겼는지)
+- 5. 스테이지 (목표 개수·난이도)
+
+- [ ] **Step 6: 2단계로 넘어갈지 정한다**
+
+플레이테스트 결과에 따라 셋 중 하나다:
+
+1. **재미있다** → 2단계(스테이지 6개·상점 이식·랭킹) 계획을 쓴다
+2. **되긴 하는데 심심하다** → 협동 강제 장치를 먼저 손본다. 스테이지를 늘려도
+   심심한 건 그대로다
+3. **기술적으로 안 된다** → 무엇이 안 되는지에 따라 다르다. 지연이 문제면 WebRTC 를
+   다시 검토하고, 호스트 부하가 문제면 시뮬레이션 주기를 낮춘다
+
+- [ ] **Step 7: 커밋**
+
+```bash
+cd /c/Users/NAU/Desktop/Overworked
+git add docs/
+git commit -m "$(printf '%s\n' '플레이테스트 1: 팀원 8명과 실제로 붙어 본 결과' '' '본 것만 적었다. 추측은 적지 않았다.' '' 'Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
+git push
+```
+
+---
+
+## 자체 점검
+
+계획을 다 쓰고 스펙과 대조했다.
+
+**스펙 항목별 담당 태스크**
+
+| 스펙 | 태스크 |
+|---|---|
+| 1. 무엇을 만드는가 | 전체 |
+| 2. 측정으로 확인한 제약 | Task 3(스트리밍), Task 8(전송량) |
+| 3.1~3.2 호스트 권위·흐름 | Task 7, Task 11 |
+| 3.3 호스트 승계 | Task 9(판단), Task 11(실행) |
+| 3.4 데이터 구조 | Task 4(규칙), Task 8(스냅샷), Task 11(조립) |
+| 3.5 전송량 예산 | Task 8 (실측 완료) |
+| 3.6 보안 규칙 | Task 4 |
+| 4.1 조작 | Task 7, Task 11 |
+| 4.2 공정 | Task 6 |
+| 4.3 협동 강제 장치 | Task 6·7 (한 번에 하나·점유), Task 5 (좁은 통로). **두 명이 드는 물건은 2단계** |
+| 4.4 주문 | **2단계** (1단계는 고정 목표 6개) |
+| 5. 스테이지 | Task 5 (1스테이지만), 나머지 2단계 |
+| 6. 캐릭터·상점 | Task 11 (캐릭터만). **상점 이식은 2단계** |
+| 7. 파일 구조 | 전체 |
+
+**1단계에서 빠지는 것 (의도적):** 주문서, 스테이지 2~6, 상점·코인, 두 명이 드는 물건,
+UV·베이크·리깅·렌더팜 기계(표에는 있으나 맵에 없음). 전부 2단계 몫이다.
+
+**계획서 코드 검증:** Task 1·2·3·5·6·7·8·9·10 의 코드를 실제로 뽑아 돌렸다.
+**테스트 115개 전부 통과.** 그 과정에서 잡은 것:
+
+- Task 2: 문자 집합을 32자라 썼는데 31자였다
+- Task 5: 내가 쓴 테스트 세 개가 틀렸다 (타일 계산, `maxDist 0`, 실제 맵 배치 의존)
+- Task 7: **액션 우선순위 결함** — 집기가 두드리기보다 앞서서 작업이 영원히 안 됐다
+- Task 9: **승계 판단 결함** — 틱이 흐르는데도 심박수가 낡았다고 멀쩡한 호스트를 밀어냈다
+- Task 10: 테스트 케이스가 순간이동 문턱 바로 위였다
+- 실행 명령 `node --test test/` 가 Node 24 에서 디렉터리를 모듈로 읽는다
+
+Task 4(Firebase 콘솔)·11(브라우저)·12(사람)은 코드가 아니라 검증할 수 없다.
+대신 확인할 값과 기대치를 적어 뒀다.
