@@ -637,3 +637,541 @@ git commit -m "$(printf '%s\n' '네트워크 계층: SDK 없이 SSE 스트리밍
 ```
 
 ---
+### Task 4: Firebase 보안 규칙에 `rooms` 열기
+
+지금 규칙은 `scores`(퇴근의 계단 랭킹)만 열려 있고 나머지 경로는 전부 잠겨 있다.
+`rooms` 를 열어야 이 게임이 돌아간다. **`scores` 규칙은 한 글자도 건드리지 않는다.**
+
+이 태스크는 코드가 아니라 Firebase 콘솔 작업이다. 규칙을 바꾼 뒤 curl 로
+"허용해야 할 것은 되고, 막아야 할 것은 막히는지"를 확인한다.
+
+**Files:**
+- Create: `docs/firebase-rules.json` (콘솔에 붙여 넣은 규칙 사본 — 무엇을 왜 열었는지 남긴다)
+
+**Interfaces:**
+- Consumes: 없음
+- Produces: `rooms/<코드>/` 아래 읽기·쓰기 가능. Task 3 의 `Net.put`/`Net.watch` 가 이 경로에서 200 을 받는다.
+
+- [ ] **Step 1: 지금 규칙을 먼저 백업한다**
+
+Firebase 콘솔 → Realtime Database → 규칙 탭에서 현재 규칙 전체를 복사해
+`docs/firebase-rules-backup-2026-08-26.json` 으로 저장한다.
+
+**이 단계를 건너뛰지 말 것.** 규칙을 잘못 덮어쓰면 사내 랭킹이 통째로 잠기거나
+반대로 통째로 열린다. 되돌릴 것이 있어야 한다.
+
+- [ ] **Step 2: 막혀 있음을 먼저 확인한다**
+
+```bash
+curl -s -X PUT -d '{"host":"x","phase":"lobby"}' \
+  'https://mohag-8a5b8-default-rtdb.asia-southeast1.firebasedatabase.app/rooms/__t/meta.json'
+```
+
+Expected: `{"error":"Permission denied"}`
+
+- [ ] **Step 3: 규칙을 바꾼다**
+
+`docs/firebase-rules.json` 을 만들고, 같은 내용을 콘솔 규칙 탭에 붙여 넣은 뒤 게시한다.
+
+```json
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+
+    "scores": {
+      ".read": true,
+      "$name": {
+        ".write": true,
+        ".validate": "newData.hasChildren(['name','floor'])",
+        "name":  { ".validate": "newData.isString() && newData.val().length <= 12" },
+        "floor": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000" },
+        "date":  { ".validate": "newData.isString() && newData.val().length <= 12" },
+        "t":     { ".validate": "newData.isNumber()" },
+        "$other": { ".validate": false }
+      }
+    },
+
+    "rooms": {
+      "$code": {
+        ".read": "$code.length == 4",
+        ".write": "$code.length == 4",
+
+        "meta": {
+          ".validate": "newData.hasChildren(['host','phase'])",
+          "host":  { ".validate": "newData.isString() && newData.val().length <= 24" },
+          "phase": { ".validate": "newData.isString() && (newData.val() == 'lobby' || newData.val() == 'play' || newData.val() == 'result')" },
+          "stage": { ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 6" },
+          "born":  { ".validate": "newData.isNumber()" },
+          "$other": { ".validate": false }
+        },
+
+        "who": {
+          "$pid": {
+            "name": { ".validate": "newData.isString() && newData.val().length <= 12" },
+            "char": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 7" },
+            "join": { ".validate": "newData.isNumber()" },
+            "seen": { ".validate": "newData.isNumber()" },
+            "gear": { ".validate": "newData.hasChildren()" }
+          }
+        },
+
+        "in": {
+          "$pid": {
+            "x":   { ".validate": "newData.isNumber() && newData.val() >= -1 && newData.val() <= 1" },
+            "y":   { ".validate": "newData.isNumber() && newData.val() >= -1 && newData.val() <= 1" },
+            "act": { ".validate": "newData.isNumber()" },
+            "seq": { ".validate": "newData.isNumber()" },
+            "$other": { ".validate": false }
+          }
+        },
+
+        "st": { ".validate": "newData.hasChild('t')" },
+
+        "$other": { ".validate": false }
+      }
+    }
+  }
+}
+```
+
+**왜 이렇게 열었는지:**
+
+- `scores` 블록은 **기존 규칙 그대로**다. Step 1 백업과 대조해서 한 글자도 다르지
+  않은지 확인한다. 다르면 백업 쪽을 쓴다.
+- `rooms` 는 인증을 두지 않는다. 사내 게임이고, 방 코드를 아는 사람만 들어온다.
+  인증을 붙이면 팀원들이 로그인을 해야 하는데 그 마찰이 얻는 것보다 크다.
+- 대신 **경로를 `rooms` 안에 가두고 모양을 검사한다.** `$other: false` 가 핵심이다 —
+  정해둔 키 말고는 아무것도 못 쓴다. 실수나 장난으로 이상한 데이터가 쌓이지 않는다.
+- `$code.length == 4` 로 방 코드 길이를 강제한다. 긴 경로를 만들어 저장소를 채우는
+  걸 막는다.
+- `in/$pid` 의 `x`, `y` 를 -1~1 로 묶었다. 방향 입력은 그 세 값뿐이다.
+- `st` 는 통째로 검사하지 않는다. 스냅샷 모양이 2단계에서 바뀔 텐데 그때마다 규칙을
+  고치면 배포가 어긋난다. `t`(틱)만 있으면 통과시킨다.
+
+- [ ] **Step 4: 허용해야 할 것이 되는지 확인한다**
+
+```bash
+BASE='https://mohag-8a5b8-default-rtdb.asia-southeast1.firebasedatabase.app'
+curl -s -X PUT -d '{"host":"p1","phase":"lobby","stage":1,"born":1}' "$BASE/rooms/TEST/meta.json"; echo
+curl -s -X PUT -d '{"name":"테스트","char":0,"join":1,"seen":1}'     "$BASE/rooms/TEST/who/p1.json"; echo
+curl -s -X PUT -d '{"x":1,"y":0,"act":0,"seq":3}'                   "$BASE/rooms/TEST/in/p1.json"; echo
+curl -s -X PUT -d '{"t":42,"p":{}}'                                 "$BASE/rooms/TEST/st.json"; echo
+```
+
+Expected: 네 줄 모두 보낸 값이 그대로 돌아온다 (에러 없음)
+
+- [ ] **Step 5: 막아야 할 것이 막히는지 확인한다**
+
+```bash
+BASE='https://mohag-8a5b8-default-rtdb.asia-southeast1.firebasedatabase.app'
+echo -n '방코드 5자: ';   curl -s -X PUT -d '{"host":"x","phase":"lobby"}' "$BASE/rooms/TOOLONG/meta.json"
+echo; echo -n 'phase 이상: '; curl -s -X PUT -d '{"host":"x","phase":"해킹"}'   "$BASE/rooms/TEST/meta.json"
+echo; echo -n 'meta 잡키: ';  curl -s -X PUT -d '{"host":"x","phase":"lobby","evil":1}' "$BASE/rooms/TEST/meta.json"
+echo; echo -n '입력 범위: ';  curl -s -X PUT -d '{"x":99,"y":0}'              "$BASE/rooms/TEST/in/p1.json"
+echo; echo -n '닉 13자: ';    curl -s -X PUT -d '{"name":"열세글자를넘기는이름입니다"}' "$BASE/rooms/TEST/who/p1.json"
+echo; echo -n 'rooms 밖: ';   curl -s -X PUT -d '{"x":1}'                     "$BASE/evil.json"
+echo; echo -n 'scores 잡키: ';curl -s -X PUT -d '{"name":"x","floor":1,"evil":1}' "$BASE/scores/__t.json"
+echo
+```
+
+Expected: **일곱 줄 모두** `{"error":"Permission denied"}`
+
+- [ ] **Step 6: 랭킹이 여전히 살아 있는지 확인한다**
+
+규칙을 고친 뒤 퇴근의 계단이 멀쩡한지 반드시 본다. 이게 이 태스크에서 제일 위험한 부분이다.
+
+```bash
+BASE='https://mohag-8a5b8-default-rtdb.asia-southeast1.firebasedatabase.app'
+echo -n '랭킹 읽기: '; curl -s "$BASE/scores.json" | head -c 120; echo
+echo -n '정상 등록: '; curl -s -X PUT -d '{"name":"__t","floor":1,"date":"2026.08.26","t":1}' "$BASE/scores/__t.json"; echo
+curl -s -X DELETE "$BASE/scores/__t.json" > /dev/null
+```
+
+Expected: 랭킹이 읽히고, 정상 형태 등록이 200 으로 돌아온다
+
+- [ ] **Step 7: 테스트 방을 지운다**
+
+```bash
+curl -s -X DELETE 'https://mohag-8a5b8-default-rtdb.asia-southeast1.firebasedatabase.app/rooms/TEST.json'
+```
+
+- [ ] **Step 8: Task 3 의 브라우저 왕복 확인을 지금 한다**
+
+Task 3 Step 5 에서 미뤄 둔 실제 왕복 확인을 여기서 한다.
+
+```bash
+cd /c/Users/NAU/Desktop/Overworked && python -m http.server 8895 --directory .
+```
+
+빈 페이지(`http://localhost:8895/js/`)의 콘솔에서:
+
+```js
+await new Promise(r => { const s=document.createElement('script'); s.src='/js/cloud-config.js'; s.onload=r; document.head.append(s); });
+await new Promise(r => { const s=document.createElement('script'); s.src='/js/net.js'; s.onload=r; document.head.append(s); });
+
+const seen = [];
+const w = Net.watch('rooms/ZZZZ', st => seen.push(st));
+await new Promise(r => setTimeout(r, 600));
+const t0 = performance.now();
+await Net.put('rooms/ZZZZ/meta', { host: 'me', phase: 'lobby', stage: 1, born: 1 });
+await Net.put('rooms/ZZZZ/who/p1', { name: '가', char: 0, join: 1, seen: 1 });
+await new Promise(r => setTimeout(r, 900));
+const out = { 걸린ms: Math.round(performance.now()-t0), 이벤트수: seen.length, 최종: w.state() };
+w.close(); await Net.del('rooms/ZZZZ');
+out;
+```
+
+Expected:
+- `이벤트수` ≥ 3
+- `최종` = `{meta:{born:1,host:"me",phase:"lobby",stage:1}, who:{p1:{char:0,join:1,name:"가",seen:1}}}`
+- `걸린ms` < 400
+
+- [ ] **Step 9: 커밋**
+
+```bash
+cd /c/Users/NAU/Desktop/Overworked
+git add docs/firebase-rules.json docs/firebase-rules-backup-2026-08-26.json
+git commit -m "$(printf '%s\n' '보안 규칙: rooms 경로를 열되 모양을 강제한다' '' 'scores(퇴근의 계단 랭킹) 블록은 한 글자도 건드리지 않았다. 규칙 변경으로' '사내 랭킹이 잠기거나 열리는 게 이 작업의 유일한 진짜 위험이라, 바꾸기 전에' '백업하고 바꾼 뒤 랭킹 읽기/등록을 다시 확인했다.' '' 'rooms 에 인증은 두지 않는다. 사내 게임이고 방 코드를 아는 사람만 들어온다.' '로그인 마찰이 얻는 것보다 크다. 대신 $other:false 로 정해둔 키 말고는' '아무것도 못 쓰게 막았다.' '' 'st 는 t(틱)만 검사한다. 스냅샷 모양은 2단계에서 바뀌는데 그때마다 규칙을' '고치면 배포와 어긋난다.' '' 'Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
+```
+
+---
+### Task 5: 맵과 충돌
+
+1스테이지 작업장 하나. 벽과 작업대는 못 지나가고, 플레이어는 원으로 미끄러진다.
+**벽에 부딪혔을 때 멈추지 않고 벽을 따라 미끄러져야 한다** — 8명이 좁은 통로에서
+엉키는 게임인데 벽에 붙으면 딱 멈추면 조작이 답답해서 못 한다.
+
+**Files:**
+- Create: `js/world.js`
+- Create: `test/world.test.js`
+
+**Interfaces:**
+- Consumes: 없음
+- Produces:
+  - `window.World.W` = `1280`, `window.World.H` = `720`, `window.World.TILE` = `40`
+  - `window.World.R` = `14` (플레이어 반지름)
+  - `window.World.STAGE1` → `{ cols, rows, grid, spawns, stations }`
+    - `grid`: 길이 `cols*rows` 인 문자열 배열. `'.'`=바닥, `'#'`=벽, `'S'`=작업대(막힘)
+    - `spawns`: `[{x,y}, ...]` 8개
+    - `stations`: `[{id, type, cx, cy}, ...]` — `cx,cy`는 디자인 좌표 중심
+  - `window.World.solidAt(map, x, y)` → boolean. 디자인 좌표가 막힌 칸인지.
+  - `window.World.move(map, x, y, dx, dy)` → `{x, y}`. 반지름 `R` 원을 `dx,dy` 만큼 밀되 벽을 따라 미끄러진다.
+  - `window.World.nearest(map, x, y, maxDist)` → 가장 가까운 station 객체 또는 `null`
+
+- [ ] **Step 1: 실패하는 테스트를 쓴다**
+
+`test/world.test.js`:
+
+```js
+'use strict';
+const { test } = require('node:test');
+const assert = require('node:assert');
+const { load } = require('../testlib/load');
+
+function world() { return load('world').World; }
+
+/* 테스트용 작은 맵: 5x3, 테두리가 벽
+   #####
+   #...#
+   ##### */
+function tiny(W) {
+  return {
+    cols: 5, rows: 3,
+    grid: ('#####' + '#...#' + '#####').split(''),
+    spawns: [], stations: []
+  };
+}
+
+test('맵 크기와 상수', () => {
+  const W = world();
+  assert.strictEqual(W.W, 1280);
+  assert.strictEqual(W.H, 720);
+  assert.strictEqual(W.TILE, 40);
+  assert.ok(W.R > 0 && W.R < W.TILE / 2, '반지름이 타일 절반보다 작아야 통로를 지난다');
+});
+
+test('solidAt 은 벽 칸을 막힌 것으로 본다', () => {
+  const W = world(), m = tiny(W);
+  assert.strictEqual(W.solidAt(m, 20, 20), true);    // (0,0) 벽
+  assert.strictEqual(W.solidAt(m, 60, 60), false);   // (1,1) 바닥
+  assert.strictEqual(W.solidAt(m, 140, 60), false);  // (3,1) 바닥
+  assert.strictEqual(W.solidAt(m, 180, 60), true);   // (4,1) 오른쪽 벽
+  assert.strictEqual(W.solidAt(m, 20, 60), true);    // (0,1) 왼쪽 벽
+});
+
+test('solidAt 은 맵 밖을 막힌 것으로 본다', () => {
+  const W = world(), m = tiny(W);
+  assert.strictEqual(W.solidAt(m, -5, 60), true);
+  assert.strictEqual(W.solidAt(m, 9999, 60), true);
+  assert.strictEqual(W.solidAt(m, 60, -5), true);
+  assert.strictEqual(W.solidAt(m, 60, 9999), true);
+});
+
+test('빈 곳에서는 그대로 움직인다', () => {
+  const W = world(), m = tiny(W);
+  const p = W.move(m, 60, 60, 10, 0);
+  assert.strictEqual(Math.round(p.x), 70);
+  assert.strictEqual(Math.round(p.y), 60);
+});
+
+test('벽을 향해 밀면 벽에 닿아 멈춘다', () => {
+  const W = world(), m = tiny(W);
+  const p = W.move(m, 60, 60, -100, 0);
+  assert.ok(p.x >= 40 + W.R - 0.5, '왼쪽 벽(x=40) 안으로 들어가면 안 된다: ' + p.x);
+  assert.ok(p.x <= 40 + W.R + 0.5);
+});
+
+test('벽에 비스듬히 밀면 벽을 따라 미끄러진다', () => {
+  const W = world(), m = tiny(W);
+  /* 위쪽 벽(y<40)을 향해 오른쪽 위로 민다. y 는 막히고 x 는 가야 한다. */
+  const p = W.move(m, 60, 60, 20, -100);
+  assert.ok(p.x > 70, '가로 성분이 살아 있어야 한다: ' + p.x);
+  assert.ok(p.y >= 40 + W.R - 0.5, '위쪽 벽을 뚫으면 안 된다: ' + p.y);
+});
+
+test('움직이지 않으면 자리가 그대로다', () => {
+  const W = world(), m = tiny(W);
+  const p = W.move(m, 60, 60, 0, 0);
+  assert.strictEqual(p.x, 60);
+  assert.strictEqual(p.y, 60);
+});
+
+test('1스테이지 맵이 화면에 들어맞는다', () => {
+  const W = world(), m = W.STAGE1;
+  assert.strictEqual(m.cols * W.TILE, W.W);
+  assert.strictEqual(m.rows * W.TILE, W.H);
+  assert.strictEqual(m.grid.length, m.cols * m.rows);
+});
+
+test('1스테이지에 스폰 8개가 있고 전부 바닥이다', () => {
+  const W = world(), m = W.STAGE1;
+  assert.strictEqual(m.spawns.length, 8);
+  for (const s of m.spawns) {
+    assert.strictEqual(W.solidAt(m, s.x, s.y), false, '스폰이 벽 안이다: ' + JSON.stringify(s));
+  }
+});
+
+test('1스테이지에 필요한 기계가 다 있다', () => {
+  const W = world(), m = W.STAGE1;
+  const types = m.stations.map(s => s.type).sort();
+  for (const need of ['ref', 'model', 'retopo', 'ship', 'bin']) {
+    assert.ok(types.includes(need), need + ' 기계가 없다');
+  }
+  const ids = m.stations.map(s => s.id);
+  assert.strictEqual(new Set(ids).size, ids.length, 'id 가 겹친다');
+});
+
+test('모든 기계 앞에 설 자리가 있다', () => {
+  const W = world(), m = W.STAGE1;
+  for (const st of m.stations) {
+    const around = [[0,-W.TILE],[0,W.TILE],[-W.TILE,0],[W.TILE,0]];
+    const open = around.filter(d => !W.solidAt(m, st.cx + d[0], st.cy + d[1]));
+    assert.ok(open.length > 0, st.id + ' 앞에 설 자리가 없다');
+  }
+});
+
+test('nearest 는 범위 안의 가장 가까운 기계를 준다', () => {
+  const W = world(), m = W.STAGE1;
+  const st = m.stations[0];
+  assert.strictEqual(W.nearest(m, st.cx, st.cy, 60).id, st.id);
+  assert.strictEqual(W.nearest(m, st.cx + 20, st.cy, 60).id, st.id);
+});
+
+test('nearest 는 범위 밖이면 null', () => {
+  const W = world(), m = W.STAGE1;
+  /* 가운데 열린 띠 한복판 — 어느 기계에서도 멀다 */
+  assert.strictEqual(W.nearest(m, 16 * W.TILE, 6 * W.TILE, 40), null);
+});
+
+test('nearest 는 둘 중 더 가까운 쪽을 고른다', () => {
+  const W = world();
+  /* 실제 맵으로 하면 세 번째 기계가 더 가까워서 시험이 흐려진다.
+     "둘 중 가까운 쪽"만 보려면 기계가 둘뿐인 맵을 지어서 쓴다. */
+  const m = {
+    cols: 5, rows: 3, grid: ('#####' + '#...#' + '#####').split(''), spawns: [],
+    stations: [
+      { id: 'a', type: 'ref', cx: 60, cy: 60 },
+      { id: 'b', type: 'ship', cx: 140, cy: 60 }
+    ]
+  };
+  assert.strictEqual(W.nearest(m, 90, 60, 400).id, 'a');
+  assert.strictEqual(W.nearest(m, 110, 60, 400).id, 'b');
+});
+```
+
+- [ ] **Step 2: 실패를 확인한다**
+
+Run: `cd /c/Users/NAU/Desktop/Overworked && node --test test/world.test.js`
+Expected: FAIL — `ENOENT ... js/world.js`
+
+- [ ] **Step 3: 구현**
+
+`js/world.js`:
+
+```js
+/* ============================================================
+   오버워크드 — 맵과 충돌
+
+   좌표계는 1280x720 디자인 픽셀로 고정한다. 화면이 얼마든 게임 로직은
+   항상 이 좌표를 쓰고, 스케일은 그리기 직전에만 건다. 이래야 사람마다
+   창 크기가 달라도 같은 판을 본다.
+
+   타일 40px, 플레이어 반지름 14px. 반지름이 타일 절반(20)보다 작아야
+   한 칸짜리 통로를 지날 수 있다.
+
+   ── 미끄러짐에 대해 ────────────────────────────────────
+   벽에 부딪혔을 때 딱 멈추면 조작이 답답해서 못 한다. 8명이 좁은 통로에서
+   엉키는 게임이라 벽을 따라 흘러야 한다. 그래서 x 와 y 를 따로 밀어 보고
+   막힌 축만 버린다. 축 분리는 가장 싼 방법이면서 이 게임엔 충분하다.
+   ============================================================ */
+(function (global) {
+  'use strict';
+
+  var W = 1280, H = 720, TILE = 40, R = 14;
+  var COLS = W / TILE;          // 32
+  var ROWS = H / TILE;          // 18
+
+  function tileAt(map, x, y) {
+    var cx = Math.floor(x / TILE), cy = Math.floor(y / TILE);
+    if (cx < 0 || cy < 0 || cx >= map.cols || cy >= map.rows) return '#';   // 맵 밖은 벽
+    return map.grid[cy * map.cols + cx];
+  }
+
+  function solidAt(map, x, y) {
+    var t = tileAt(map, x, y);
+    return t === '#' || t === 'S';
+  }
+
+  /* 반지름 R 인 원이 (x,y) 에 있을 때 겹치는 칸이 있는가.
+     원의 네 극점만 본다 — 타일이 반지름보다 크므로 이걸로 충분하다. */
+  function blocked(map, x, y) {
+    return solidAt(map, x - R, y) || solidAt(map, x + R, y) ||
+           solidAt(map, x, y - R) || solidAt(map, x, y + R) ||
+           solidAt(map, x - R * 0.7, y - R * 0.7) || solidAt(map, x + R * 0.7, y - R * 0.7) ||
+           solidAt(map, x - R * 0.7, y + R * 0.7) || solidAt(map, x + R * 0.7, y + R * 0.7);
+  }
+
+  /* 한 축을 밀어 본다. 막히면 벽에 딱 붙는 자리까지만 간다.
+     이분 탐색을 쓰는 이유: 한 프레임에 여러 칸을 건너뛸 만큼 빠를 때도
+     벽을 통과하지 않게 하려면 "얼마나 갈 수 있나"를 찾아야 한다. */
+  function slide(map, x, y, dx, dy) {
+    var nx = x + dx, ny = y + dy;
+    if (!blocked(map, nx, ny)) return { x: nx, y: ny };
+
+    var lo = 0, hi = 1;
+    for (var i = 0; i < 12; i++) {
+      var mid = (lo + hi) / 2;
+      if (blocked(map, x + dx * mid, y + dy * mid)) hi = mid; else lo = mid;
+    }
+    return { x: x + dx * lo, y: y + dy * lo };
+  }
+
+  function move(map, x, y, dx, dy) {
+    var p = { x: x, y: y };
+    if (dx) p = slide(map, p.x, p.y, dx, 0);
+    if (dy) p = slide(map, p.x, p.y, 0, dy);
+    return p;
+  }
+
+  function nearest(map, x, y, maxDist) {
+    var best = null, bd = maxDist * maxDist;
+    for (var i = 0; i < map.stations.length; i++) {
+      var s = map.stations[i];
+      var ddx = s.cx - x, ddy = s.cy - y;
+      var d = ddx * ddx + ddy * ddy;
+      if (d <= bd) { bd = d; best = s; }
+    }
+    return best;
+  }
+
+  /* ---------- 1스테이지: 인턴의 첫 발주 ----------
+     32x18 칸. 가운데 섬이 하나 있어 8명이 한 줄로 몰리지 않고 갈라진다.
+     기계는 벽에 붙여 두고 앞칸을 비워, 서는 자리가 통로를 막지 않게 한다.
+
+     . 바닥   # 벽   S 작업대(막힘)                                        */
+  var G1 = [
+    '################################',
+    '#..............................#',
+    '#..SS......................SS..#',
+    '#..............................#',
+    '#..............................#',
+    '#........####........####......#',
+    '#........#..#........#..#......#',
+    '#........####........####......#',
+    '#..............................#',
+    '#..............................#',
+    '#..............................#',
+    '#........####........####......#',
+    '#........#..#........#..#......#',
+    '#........####........####......#',
+    '#..............................#',
+    '#..SS......................SS..#',
+    '#..............................#',
+    '################################'
+  ];
+
+  function buildStage1() {
+    var grid = G1.join('').split('');
+    var map = { cols: COLS, rows: ROWS, grid: grid, spawns: [], stations: [] };
+
+    /* 기계 자리는 위에서 'SS' 로 찍어 둔 네 곳이다. 좌표는 그 두 칸의 가운데. */
+    map.stations = [
+      { id: 'ref1',    type: 'ref',    cx: 4 * TILE + TILE / 2,  cy: 2 * TILE + TILE / 2 },
+      { id: 'model1',  type: 'model',  cx: 28 * TILE - TILE / 2, cy: 2 * TILE + TILE / 2 },
+      { id: 'retopo1', type: 'retopo', cx: 4 * TILE + TILE / 2,  cy: 15 * TILE + TILE / 2 },
+      { id: 'ship1',   type: 'ship',   cx: 28 * TILE - TILE / 2, cy: 15 * TILE + TILE / 2 }
+    ];
+
+    /* 폐기통은 가운데 섬 옆 바닥에 둔다. 벽이 아니라 바닥 위 물건이라
+       지나갈 수 있다 — 통로 한가운데 막힌 걸 두면 8명이 엉킨다. */
+    map.stations.push({ id: 'bin1', type: 'bin', cx: 16 * TILE, cy: 9 * TILE + TILE / 2 });
+
+    /* 스폰 8개 — 가운데 열린 띠(9~10행)에 좌우로 흩는다 */
+    for (var i = 0; i < 8; i++) {
+      map.spawns.push({
+        x: (5 + i * 3) * TILE + TILE / 2,
+        y: (i % 2 === 0 ? 9 : 10) * TILE + TILE / 2
+      });
+    }
+    return map;
+  }
+
+  global.World = {
+    W: W, H: H, TILE: TILE, R: R, COLS: COLS, ROWS: ROWS,
+    solidAt: solidAt,
+    blocked: blocked,
+    move: move,
+    nearest: nearest,
+    STAGE1: buildStage1()
+  };
+})(window);
+```
+
+- [ ] **Step 4: 통과를 확인한다**
+
+Run: `cd /c/Users/NAU/Desktop/Overworked && node --test test/world.test.js`
+Expected: PASS — `15 pass, 0 fail`
+
+맵 글자를 하나라도 잘못 세면 `1스테이지 맵이 화면에 들어맞는다` 또는
+`스폰 8개가 전부 바닥이다` 가 깨진다. 깨지면 `G1` 의 각 줄이 정확히 32글자인지,
+줄이 18개인지부터 센다:
+
+```bash
+cd /c/Users/NAU/Desktop/Overworked && node -e "
+const {load}=require('./testlib/load'); const W=load('world').World;
+const m=W.STAGE1;
+console.log('칸', m.cols+'x'+m.rows, '= '+(m.cols*m.rows), '실제', m.grid.length);
+for(let r=0;r<m.rows;r++) console.log(String(r).padStart(2), m.grid.slice(r*m.cols,(r+1)*m.cols).join(''));
+"
+```
+
+- [ ] **Step 5: 커밋**
+
+```bash
+cd /c/Users/NAU/Desktop/Overworked
+git add js/world.js test/world.test.js
+git commit -m "$(printf '%s\n' '맵과 충돌: 벽을 따라 미끄러진다' '' '벽에 부딪혔을 때 딱 멈추면 조작이 답답해서 못 한다. 8명이 좁은 통로에서' '엉키는 게임이라 벽을 따라 흘러야 한다. x 와 y 를 따로 밀어 보고 막힌 축만' '버리는 축 분리 방식으로, 가장 싸면서 이 게임엔 충분하다.' '' '한 프레임에 여러 칸을 건너뛸 만큼 빠를 때도 벽을 통과하지 않게 이분 탐색으로' '"얼마나 갈 수 있나"를 찾는다.' '' '폐기통은 벽이 아니라 바닥 위에 둔다. 통로 한가운데 막힌 걸 두면 8명이 엉킨다.' '' 'Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
+```
+
+---
