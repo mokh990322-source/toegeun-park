@@ -105,6 +105,17 @@ test('모든 기계 앞에 설 자리가 있다', () => {
   }
 });
 
+/* M5: 폐기통이 가운데 통로 한복판·스폰 바로 옆에 있으면 지나가다 실수로
+   물건을 버리게 된다. 스폰에서 충분히 떨어져 있는지 고정해 둔다. */
+test('폐기통은 스폰 바로 옆이 아니다', () => {
+  const W = world(), m = W.STAGE1;
+  const bin = m.stations.find(s => s.type === 'bin');
+  for (const s of m.spawns) {
+    const d = Math.hypot(bin.cx - s.x, bin.cy - s.y);
+    assert.ok(d > W.TILE * 2, '폐기통이 스폰에서 ' + d + 'px 밖에 안 떨어져 있다: 지나가다 밟는다');
+  }
+});
+
 test('nearest 는 범위 안의 가장 가까운 기계를 준다', () => {
   const W = world(), m = W.STAGE1;
   const st = m.stations[0];
