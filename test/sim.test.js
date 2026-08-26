@@ -197,9 +197,12 @@ test('한 번에 너무 많이 밀려도 상한이 있다', () => {
   let st = S.create(bench(w), ['a']);
   st.machines.m = { id: 'm', type: 'model', item: 'ref', prog: 0 };
   stand(st, 'a', 'm', S);
+  /* 예전 버전은 item==='high'(work=6번이면 완성) 이거나 prog<=20 이면 통과했는데,
+     둘 다 MAX_ACTS(8)든 100000이든 참이라 클램프를 실제로는 검증하지 못했다.
+     클램프의 증거는 "처리한 seq 가 정확히 MAX_ACTS 만큼만 늘었다"는 것뿐이다. */
   st = S.tick(st, { a: { x: 0, y: 0, seq: 100000 } }, 1 / 60);
-  assert.ok(st.machines.m.item === 'high' || st.machines.m.prog <= 20,
-    '한 틱에 무한히 처리하면 안 된다');
+  assert.strictEqual(st.players.a.seq, S.MAX_ACTS,
+    '한 틱에는 MAX_ACTS 만큼만 처리해야 한다 (요청 seq 는 100000)');
 });
 
 test('join 이 플레이어를 넣고 leave 가 뺀다', () => {
