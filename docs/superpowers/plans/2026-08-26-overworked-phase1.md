@@ -2361,3 +2361,288 @@ git commit -m "$(printf '%s\n' '스냅샷: 전송량이 여기서 결정된다' 
 ```
 
 ---
+### Task 9: 호스트 승계 판단
+
+호스트가 탭을 닫으면 판이 죽는다. 누가 alt-tab 했다고 스테이지가 날아가면 안 된다.
+
+승계는 **판단**과 **실행**으로 나뉜다. 판단(누가 다음 호스트인가, 지금 나서야 하나)은
+순수 함수라 Node 로 전부 검증한다. 실행(실제로 쓰기)은 Task 10 에서 붙인다.
+경합 상황을 실제 8명으로 재현하는 건 불가능하므로, **판단을 순수하게 떼어내는 것이
+이 기능을 신뢰할 수 있게 만드는 유일한 방법이다.**
+
+**Files:**
+- Modify: `js/room.js` (Task 2 에서 만든 파일에 이어 붙인다)
+- Create: `test/room-host.test.js`
+
+**Interfaces:**
+- Consumes: `window.Room` (Task 2)
+- Produces:
+  - `window.Room.HOST_TIMEOUT` = `3.0` (초). 이만큼 틱이 안 늘면 죽은 것으로 본다
+  - `window.Room.CLAIM_WAIT` = `1.0` (초). 나선 뒤 관망하는 시간
+  - `window.Room.SEEN_TIMEOUT` = `10.0` (초). 이만큼 소식 없으면 나간 사람으로 본다
+  - `window.Room.alive(who, nowMs)` → 살아 있는 pid 배열 (`join` 오름차순)
+  - `window.Room.nextHost(who, nowMs)` → 다음 호스트가 될 pid 또는 `null`
+  - `window.Room.hostDead(lastTick, lastChangeMs, nowMs)` → boolean
+  - `window.Room.shouldClaim(opts)` → `'claim'` / `'wait'` / `'yield'` / `'none'`
+    - `opts`: `{ me, host, who, lastTick, lastChangeMs, nowMs, claimedAtMs }`
+
+- [ ] **Step 1: 실패하는 테스트를 쓴다**
+
+`test/room-host.test.js`:
+
+```js
+'use strict';
+const { test } = require('node:test');
+const assert = require('node:assert');
+const { load } = require('../testlib/load');
+
+function R() { return load('room').Room; }
+
+/* 지금이 10000ms 라고 두고, seen 을 '몇 초 전'으로 적는다 */
+const NOW = 10000;
+function who(spec) {
+  const o = {};
+  for (const k in spec) {
+    o[k] = { name: k, join: spec[k].join, seen: NOW - spec[k].agoSec * 1000 };
+  }
+  return o;
+}
+
+test('상수가 말이 되는 범위다', () => {
+  const r = R();
+  assert.ok(r.HOST_TIMEOUT >= 2 && r.HOST_TIMEOUT <= 6, '너무 짧으면 렉에 승계가 튄다');
+  assert.ok(r.CLAIM_WAIT > 0 && r.CLAIM_WAIT < r.HOST_TIMEOUT);
+  assert.ok(r.SEEN_TIMEOUT > r.HOST_TIMEOUT, '호스트 판정보다 느슨해야 한다');
+});
+
+test('alive 는 최근에 소식 있는 사람만, 입장 순서로 준다', () => {
+  const r = R();
+  const w = who({ c: { join: 3, agoSec: 1 }, a: { join: 1, agoSec: 1 }, b: { join: 2, agoSec: 99 } });
+  assert.deepStrictEqual(r.alive(w, NOW), ['a', 'c']);
+});
+
+test('alive 는 빈 목록도 견딘다', () => {
+  const r = R();
+  assert.deepStrictEqual(r.alive(null, NOW), []);
+  assert.deepStrictEqual(r.alive({}, NOW), []);
+});
+
+test('nextHost 는 입장 순번이 가장 빠른 생존자', () => {
+  const r = R();
+  const w = who({ a: { join: 1, agoSec: 99 }, b: { join: 2, agoSec: 1 }, c: { join: 3, agoSec: 1 } });
+  assert.strictEqual(r.nextHost(w, NOW), 'b');
+});
+
+test('nextHost 는 아무도 없으면 null', () => {
+  const r = R();
+  assert.strictEqual(r.nextHost(who({ a: { join: 1, agoSec: 99 } }), NOW), null);
+});
+
+test('hostDead 는 틱이 멈춘 지 오래면 참', () => {
+  const r = R();
+  const ms = r.HOST_TIMEOUT * 1000;
+  assert.strictEqual(r.hostDead(50, NOW - ms - 500, NOW), true);
+  assert.strictEqual(r.hostDead(50, NOW - 100, NOW), false);
+});
+
+test('hostDead 는 아직 스냅샷을 한 번도 못 받았으면 거짓', () => {
+  const r = R();
+  assert.strictEqual(r.hostDead(null, NOW - 99999, NOW), false, '방금 들어온 사람이 승계하면 안 된다');
+});
+
+/* ---------- shouldClaim ---------- */
+
+function opts(over) {
+  const base = {
+    me: 'b', host: 'a',
+    who: who({ a: { join: 1, agoSec: 99 }, b: { join: 2, agoSec: 1 }, c: { join: 3, agoSec: 1 } }),
+    lastTick: 50, lastChangeMs: NOW - 5000, nowMs: NOW, claimedAtMs: 0
+  };
+  return Object.assign(base, over || {});
+}
+
+test('내가 이미 호스트면 아무것도 안 한다', () => {
+  const r = R();
+  assert.strictEqual(r.shouldClaim(opts({ me: 'a', host: 'a', lastChangeMs: NOW })), 'none');
+});
+
+test('호스트가 살아 있으면 아무것도 안 한다', () => {
+  const r = R();
+  assert.strictEqual(r.shouldClaim(opts({ lastChangeMs: NOW - 100 })), 'none');
+});
+
+test('호스트가 죽고 내가 다음 차례면 나선다', () => {
+  const r = R();
+  assert.strictEqual(r.shouldClaim(opts()), 'claim');
+});
+
+test('호스트가 죽어도 내 차례가 아니면 기다린다', () => {
+  const r = R();
+  assert.strictEqual(r.shouldClaim(opts({ me: 'c' })), 'none');
+});
+
+test('나선 직후에는 관망한다', () => {
+  const r = R();
+  const o = opts({ claimedAtMs: NOW - 200 });
+  assert.strictEqual(r.shouldClaim(o), 'wait');
+});
+
+test('관망이 끝나고 내가 호스트가 됐으면 끝', () => {
+  const r = R();
+  const o = opts({ me: 'b', host: 'b', claimedAtMs: NOW - r.CLAIM_WAIT * 1000 - 100 });
+  assert.strictEqual(r.shouldClaim(o), 'none');
+});
+
+test('관망이 끝났는데 남이 호스트가 됐으면 물러난다', () => {
+  const r = R();
+  const o = opts({ me: 'b', host: 'c', claimedAtMs: NOW - r.CLAIM_WAIT * 1000 - 100 });
+  assert.strictEqual(r.shouldClaim(o), 'yield');
+});
+
+test('호스트가 목록에서 아예 사라졌으면 다음 차례가 나선다', () => {
+  const r = R();
+  const o = opts({
+    host: '없는사람',
+    who: who({ b: { join: 2, agoSec: 1 }, c: { join: 3, agoSec: 1 } })
+  });
+  assert.strictEqual(r.shouldClaim(o), 'claim');
+});
+
+test('나 혼자 남았으면 내가 호스트가 된다', () => {
+  const r = R();
+  const o = opts({ me: 'b', host: 'a', who: who({ b: { join: 2, agoSec: 1 } }) });
+  assert.strictEqual(r.shouldClaim(o), 'claim');
+});
+
+test('망가진 인자에도 안 죽는다', () => {
+  const r = R();
+  for (const bad of [null, undefined, {}, { me: 'b' }]) {
+    assert.ok(['none', 'claim', 'wait', 'yield'].indexOf(r.shouldClaim(bad)) >= 0);
+  }
+});
+```
+
+- [ ] **Step 2: 실패를 확인한다**
+
+Run: `cd /c/Users/NAU/Desktop/Overworked && node --test test/room-host.test.js`
+Expected: FAIL — `r.HOST_TIMEOUT is undefined` 또는 `shouldClaim is not a function`
+
+- [ ] **Step 3: 구현**
+
+`js/room.js` 의 `global.Room = { ... }` 바로 앞에 아래를 넣고, 내보내는 목록에 새 이름들을 더한다.
+
+```js
+  /* ============================================================
+     호스트 승계
+
+     호스트가 탭을 닫으면 판이 죽는다. 4분짜리 스테이지가 누가 alt-tab 했다고
+     날아가면 안 된다.
+
+     판단(누가 다음인가, 지금 나서야 하나)을 순수 함수로 떼어냈다. 경합 상황을
+     실제 8명으로 재현하는 건 불가능하므로, 이걸 순수하게 두는 것이 승계를
+     신뢰할 수 있게 만드는 유일한 방법이다.
+
+     ── 왜 관망 단계가 있는가 ──────────────────────────────
+     두 사람이 동시에 "호스트가 죽었다"고 판단할 수 있다. 둘 다 meta/host 를
+     자기로 쓰면 나중 쓴 쪽이 남는데, 진 쪽이 그걸 모르면 시뮬레이션을 둘이
+     돌리게 된다. 그래서 나선 뒤 1초 기다렸다가 meta/host 를 다시 보고,
+     내가 아니면 물러난다. 늦게 쓴 쪽이 이기는 성질을 그대로 이용하는 것이라
+     따로 잠금이 필요 없다.
+     ============================================================ */
+
+  var HOST_TIMEOUT = 3.0;    // 틱이 이만큼 안 늘면 호스트가 죽은 것
+  var CLAIM_WAIT = 1.0;      // 나선 뒤 관망
+  var SEEN_TIMEOUT = 10.0;   // 이만큼 소식 없으면 나간 사람
+
+  function alive(who, nowMs) {
+    if (!who || typeof who !== 'object') return [];
+    var out = [];
+    for (var pid in who) {
+      if (!Object.prototype.hasOwnProperty.call(who, pid)) continue;
+      var w = who[pid];
+      if (!w) continue;
+      if (nowMs - (w.seen || 0) > SEEN_TIMEOUT * 1000) continue;
+      out.push(pid);
+    }
+    /* 입장 순서로 줄을 세운다. 순번이 같으면 pid 로 갈라 모두가 같은 답을 얻게 한다 —
+       사람마다 다른 순서를 보면 승계 대상이 갈린다. */
+    out.sort(function (a, b) {
+      var ja = who[a].join || 0, jb = who[b].join || 0;
+      if (ja !== jb) return ja - jb;
+      return a < b ? -1 : (a > b ? 1 : 0);
+    });
+    return out;
+  }
+
+  function nextHost(who, nowMs) {
+    var list = alive(who, nowMs);
+    return list.length ? list[0] : null;
+  }
+
+  function hostDead(lastTick, lastChangeMs, nowMs) {
+    /* 아직 스냅샷을 한 번도 못 받았으면 판단하지 않는다. 방금 들어온 사람이
+       "조용하네"라며 승계해 버리면 멀쩡한 호스트를 밀어낸다. */
+    if (lastTick === null || lastTick === undefined) return false;
+    return (nowMs - lastChangeMs) > HOST_TIMEOUT * 1000;
+  }
+
+  function shouldClaim(o) {
+    if (!o || !o.me) return 'none';
+    var now = o.nowMs || 0;
+
+    /* 나선 뒤 관망 중 */
+    if (o.claimedAtMs) {
+      if (now - o.claimedAtMs < CLAIM_WAIT * 1000) return 'wait';
+      return o.host === o.me ? 'none' : 'yield';
+    }
+
+    if (o.host === o.me) return 'none';               // 이미 내가 호스트
+
+    var list = alive(o.who, now);
+    var noSnapshotYet = (o.lastTick === null || o.lastTick === undefined);
+
+    /* 스냅샷 틱이 흐르고 있으면 호스트는 살아 있다. who/seen 이 낡았어도
+       상관없다 — 스냅샷이 오고 있다는 게 훨씬 강한 증거다. 심박수만 보고
+       멀쩡한 호스트를 밀어내면 시뮬레이션이 둘로 갈린다. */
+    if (!noSnapshotYet && !hostDead(o.lastTick, o.lastChangeMs, now)) return 'none';
+
+    /* 아직 스냅샷을 한 번도 못 받았다 — 대기실이거나 방금 들어왔다.
+       이때는 who 목록으로만 판단한다. 호스트가 목록에 있으면 가만히 둔다. */
+    if (noSnapshotYet && list.indexOf(o.host) >= 0) return 'none';
+
+    return (list.length && list[0] === o.me) ? 'claim' : 'none';
+  }
+```
+
+내보내기를 이렇게 고친다:
+
+```js
+  global.Room = {
+    CODE_CHARS: CODE_CHARS,
+    makeCode: makeCode,
+    cleanCode: cleanCode,
+    HOST_TIMEOUT: HOST_TIMEOUT,
+    CLAIM_WAIT: CLAIM_WAIT,
+    SEEN_TIMEOUT: SEEN_TIMEOUT,
+    alive: alive,
+    nextHost: nextHost,
+    hostDead: hostDead,
+    shouldClaim: shouldClaim
+  };
+```
+
+- [ ] **Step 4: 통과를 확인한다**
+
+Run: `cd /c/Users/NAU/Desktop/Overworked && node --test`
+Expected: PASS — Task 2 의 방 코드 테스트 7개도 그대로 통과해야 한다. 깨지면 기존
+내보내기를 지운 것이다.
+
+- [ ] **Step 5: 커밋**
+
+```bash
+cd /c/Users/NAU/Desktop/Overworked
+git add js/room.js test/room-host.test.js
+git commit -m "$(printf '%s\n' '호스트 승계: 판단을 순수 함수로 떼어낸다' '' '호스트가 탭을 닫으면 판이 죽는다. 4분짜리 스테이지가 누가 alt-tab 했다고' '날아가면 안 된다.' '' '경합 상황을 실제 8명으로 재현하는 건 불가능하다. 그래서 "누가 다음인가,' '지금 나서야 하나"를 순수 함수로 떼어내 Node 로 전부 검증했다. 이게 이 기능을' '신뢰할 수 있게 만드는 유일한 방법이다.' '' '나선 뒤 1초 관망하는 단계를 뒀다. 둘이 동시에 나서면 나중 쓴 쪽이 남는데,' '진 쪽이 그걸 모르면 시뮬레이션을 둘이 돌린다. 늦게 쓴 쪽이 이기는 성질을' '그대로 이용하는 것이라 따로 잠금이 필요 없다.' '' '아직 스냅샷을 한 번도 못 받았으면 승계 판단을 하지 않는다. 방금 들어온' '사람이 "조용하네"라며 멀쩡한 호스트를 밀어내면 안 된다.' '' 'Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
+```
+
+---
