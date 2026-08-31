@@ -30,6 +30,10 @@
   var TILE = 40;
   var scale = 1, dpr = 1;
   var floorDirty = true;
+  var sized = false;            // "이미 캔버스를 배치했다" — width 로 추측하지 않는다.
+                                 // 빈 <canvas> 의 기본값(300)이 우연히 배율 1과
+                                 // 맞아떨어지는 창(1280 이상 너비)에서 첫 호출이
+                                 // 조기반환해 캔버스가 300x150 으로 굳는 사고가 났다.
 
   /* 기계 색 — 물건 색과 같은 계열로 맞춘다. 모델링대(마젠타)에서 나온 것이
      마젠타 덩어리라는 게 색으로 바로 읽혀야 한다. */
@@ -71,16 +75,41 @@
   /* ---------- 배치 ----------
      min(창너비/1280, 창높이/720) 로 잡고 가운데 정렬. 남는 데는 레터박스로
      둔다 — 늘려서 채우면 사람마다 다른 판을 보게 된다. */
+  function isCanvas(cv) {
+    /* 잘못 불리면(인자 생략, 숫자 전달 등) 모듈 상태를 건드리지 않고 조용히
+       빠진다 — 확인 코드가 실수로 View.layout() 이나 View.layout(1280,720) 을
+       불렀다가 floorCv 가 1280 같은 숫자로 덮여 다음 정상 호출까지 깨지는
+       사고가 실제로 있었다. */
+    return !!cv && typeof cv.getContext === 'function' &&
+           cv.nodeType === 1 && /^canvas$/i.test(cv.tagName || '');
+  }
+
+  function byId(id) {
+    var d = global.document;
+    return d && d.getElementById ? d.getElementById(id) : null;
+  }
+
   function layout(floorCv, actorsCv) {
     deps();
+
+    /* 캔버스가 아닌 게 들어오면(인자 누락·오용) id 로 직접 찾아본다. 그래도
+       없으면 아무 것도 손대지 않고 지금 배율만 돌려준다. */
+    if (!isCanvas(floorCv)) floorCv = byId('floor');
+    if (!isCanvas(actorsCv)) actorsCv = byId('actors');
+    if (!isCanvas(floorCv) || !isCanvas(actorsCv)) return scale;
+
     var s = Math.min(global.innerWidth / W.W, global.innerHeight / W.H);
     if (!(s > 0)) s = 1;
     /* 배속 화면에서 글자가 뭉개지지 않게 픽셀 밀도를 반영하되 2배에서 끊는다.
        3배까지 올리면 4K 에서 캔버스가 갑자기 세 배로 무거워진다. */
     var d = Math.min(global.devicePixelRatio || 1, 2);
 
-    if (s === scale && d === dpr && floorCv.width) return scale;
+    /* "이미 배치했나"는 sized 플래그로만 본다. floorCv.width 는 빈 캔버스의
+       HTML 기본값(300)이라 배율이 우연히 1이 되는(창 너비 1280 이상) 흔한
+       경우에 조기반환해 캔버스가 300x150 으로 굳는 사고가 났었다. */
+    if (sized && s === scale && d === dpr) return scale;
     scale = s; dpr = d;
+    sized = true;
 
     var cssW = Math.round(W.W * s), cssH = Math.round(W.H * s);
     [floorCv, actorsCv].forEach(function (cv) {

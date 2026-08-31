@@ -492,6 +492,13 @@
     Hud.show('Start');
     bindKeys();
 
+    /* 프레임 루프(step 안의 View.layout)만 믿지 않는다. requestAnimationFrame
+       은 탭이 숨어 있으면(백그라운드 탭·이 자동화 브라우저처럼 전경이어도
+       안 도는 환경) 아예 안 돈다 — 그러면 캔버스가 시작부터 끝까지
+       0x0(미배치)으로 남아 아무것도 안 그려진다. 시작할 때 한 번은 루프와
+       무관하게 반드시 크기를 잡는다. */
+    if (els.floor && els.actors) View.layout(els.floor, els.actors);
+
     global.addEventListener('resize', function () { View.dirty(); });
 
     /* heartbeat 와 승계 판단은 프레임 루프에 두면 안 된다. 탭을 백그라운드로
