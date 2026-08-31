@@ -322,3 +322,164 @@ test('벽을 통과하지 못한다', () => {
   for (let i = 0; i < 120; i++) st = S.tick(st, { a: { x: -1, y: 0, seq: 0 } }, 1 / 60);
   assert.ok(!w.World.blocked(st.map, st.players.a.x, st.players.a.y), '벽 안에 있으면 안 된다');
 });
+
+/* ========== 플레이어끼리 겹침 해소 ==========
+   벽이 없는 널찍한 방을 쓴다 — 벽 쪽 밀림은 따로(아래) 시험하고, 여기서는
+   순수하게 "겹치면 떨어진다"만 본다. */
+function openRoom(w, cols, rows) {
+  const T = w.World.TILE;
+  const rows2 = [];
+  rows2.push('#'.repeat(cols));
+  for (let r = 1; r < rows - 1; r++) rows2.push('#' + '.'.repeat(cols - 2) + '#');
+  rows2.push('#'.repeat(cols));
+  return {
+    cols, rows, grid: rows2.join('').split(''),
+    spawns: [{ x: T * 2, y: T * 2 }],
+    stations: []
+  };
+}
+
+/* players 를 다른 삽입 순서로 다시 만든다 — 내용은 같되 for-in/키 순서만 다르다. */
+function reorderPlayers(players, order) {
+  const o = {};
+  for (const pid of order) o[pid] = Object.assign({}, players[pid]);
+  return o;
+}
+
+/* 키 순서에 안 좌우되는 비교용 직렬화 — pid 를 정렬해서 문자열로 만든다.
+   copyPlayers 는 입력 순서를 그대로 물려주므로, players 오브젝트 자체의
+   키 순서까지 같으라고 요구하면 "충돌 해소가 결정적이다"와 무관한 것까지
+   시험하게 된다. 알맹이(각 필드 값)가 재현 가능한지만 본다. */
+function canon(state) {
+  const players = {};
+  for (const pid of Object.keys(state.players).sort()) players[pid] = state.players[pid];
+  const machines = {};
+  for (const id of Object.keys(state.machines).sort()) machines[id] = state.machines[id];
+  return JSON.stringify({ t: state.t, players, machines, done: state.done });
+}
+
+test('겹쳐 있던 둘은 한 틱 뒤 2R 이상 떨어지고 둘 다 바닥 위에 있다', () => {
+  const w = sim(), S = w.Sim, R = w.World.R;
+  let st = S.create(openRoom(w, 20, 12), ['a', 'b']);
+  st.players.a.x = st.players.b.x = 300;
+  st.players.a.y = st.players.b.y = 300;
+
+  st = S.tick(st, {}, 1 / 60);
+
+  const dx = st.players.a.x - st.players.b.x, dy = st.players.a.y - st.players.b.y;
+  const dist = Math.hypot(dx, dy);
+  assert.ok(dist >= 2 * R - 1e-9, '겹쳐 있던 둘은 최소 2R 만큼 떨어져야 한다: ' + dist);
+  assert.ok(!w.World.blocked(st.map, st.players.a.x, st.players.a.y), 'a 는 바닥 위여야 한다');
+  assert.ok(!w.World.blocked(st.map, st.players.b.x, st.players.b.y), 'b 는 바닥 위여야 한다');
+});
+
+test('마주 걸어오면 통과하지 않고 겹치지도 않는다', () => {
+  const w = sim(), S = w.Sim, R = w.World.R;
+  let st = S.create(openRoom(w, 20, 12), ['a', 'b']);
+  st.players.a.x = 200; st.players.a.y = 300;
+  st.players.b.x = 400; st.players.b.y = 300;
+
+  const inp = { a: { x: 1, y: 0, seq: 0 }, b: { x: -1, y: 0, seq: 0 } };
+  for (let i = 0; i < 90; i++) {
+    st = S.tick(st, inp, 1 / 60);
+    const dist = Math.hypot(st.players.a.x - st.players.b.x, st.players.a.y - st.players.b.y);
+    assert.ok(dist >= 2 * R - 1e-6, '어느 틱에서도 겹치면 안 된다 (t=' + st.t.toFixed(3) + '): ' + dist);
+    assert.ok(st.players.a.x < st.players.b.x, 'a 가 b 를 뚫고 지나가면 안 된다');
+  }
+});
+
+test('벽과 다른 플레이어 사이에 낀 사람은 벽 속으로 밀리지 않는다', () => {
+  const w = sim(), S = w.Sim, R = w.World.R, T = w.World.TILE;
+  let st = S.create(openRoom(w, 20, 12), ['a', 'b']);
+  /* a 는 왼쪽 벽에 거의 붙어 선다 — blocked() 가 x-R 를 보므로 이보다 왼쪽이면
+     벌써 벽 안이다. */
+  st.players.a.x = T + R; st.players.a.y = 300;
+  st.players.b.x = st.players.a.x + 2 * R; st.players.b.y = 300;
+
+  /* b 가 a 를 벽 쪽으로 계속 떠민다. a 가 갈 곳이 없으니 매 틱 겹침이 남을
+     수 있지만, 그렇다고 벽 안으로 들어가서는 안 된다. */
+  const inp = { b: { x: -1, y: 0, seq: 0 } };
+  for (let i = 0; i < 60; i++) {
+    st = S.tick(st, inp, 1 / 60);
+    assert.ok(!w.World.blocked(st.map, st.players.a.x, st.players.a.y),
+      'a 가 벽 속으로 밀리면 안 된다 (t=' + st.t.toFixed(3) + ')');
+    assert.ok(!w.World.blocked(st.map, st.players.b.x, st.players.b.y),
+      'b 도 벽 속에 있으면 안 된다 (t=' + st.t.toFixed(3) + ')');
+  }
+});
+
+test('8명이 한곳에 뭉쳐도 몇 틱 안에 다 떨어지고 아무도 벽 속에 없다', () => {
+  const w = sim(), S = w.Sim, R = w.World.R;
+  const pids = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+  let st = S.create(openRoom(w, 24, 16), pids);
+  for (const pid of pids) { st.players[pid].x = 400; st.players[pid].y = 400; }
+
+  /* 8명 전원이 정확히 같은 점에 뭉친 최악의 경우다. 쌍마다 절반씩 미는
+     방식은 여러 쌍이 동시에 얽혀 있으면 기하급수적으로만 수렴한다 —
+     한 쌍을 떼면 다른 쌍이 살짝 다시 겹치기 때문이다(스펙이 "수렴할
+     때까지 돌지 않는다"고 명시한 이유). 그래서 20틱을 돌리고, 남는
+     잔여 겹침은 서브픽셀(허용치 0.05px)로만 확인한다 — "눈에 보이게
+     떨어졌는가"를 보는 시험이지 "수학적으로 정확히 2R인가"를 보는
+     시험이 아니다. */
+  for (let i = 0; i < 20; i++) st = S.tick(st, {}, 1 / 60);
+
+  for (const pid of pids) {
+    assert.ok(!w.World.blocked(st.map, st.players[pid].x, st.players[pid].y),
+      pid + ' 가 벽 속에 있으면 안 된다');
+  }
+  for (let i = 0; i < pids.length; i++) {
+    for (let j = i + 1; j < pids.length; j++) {
+      const a = st.players[pids[i]], b = st.players[pids[j]];
+      const dist = Math.hypot(a.x - b.x, a.y - b.y);
+      assert.ok(dist >= 2 * R - 0.05,
+        pids[i] + '-' + pids[j] + ' 가 아직 겹쳐 있다: ' + dist);
+    }
+  }
+});
+
+test('멀리 떨어진 둘은 충돌 해소가 없던 것처럼 정확히 같은 자리로 움직인다', () => {
+  const w = sim(), S = w.Sim;
+  let st = S.create(openRoom(w, 20, 12), ['a', 'b']);
+  st.players.a.x = 200; st.players.a.y = 300;
+  st.players.b.x = 900; st.players.b.y = 300;   // 2R 보다 한참 멀다 — 절대 안 겹친다
+
+  st = S.tick(st, { a: { x: 1, y: 0, seq: 0 } }, 0.5);
+
+  /* 벽도 없고 상대도 멀어서 순수 이동 공식(SPEED*dt)과 정확히 같아야 한다. */
+  assert.strictEqual(st.players.a.x, 200 + w.Sim.SPEED * 0.5);
+  assert.strictEqual(st.players.a.y, 300);
+  assert.strictEqual(st.players.b.x, 900, '입력 없는 b 는 충돌 때문에도 움직이면 안 된다');
+  assert.strictEqual(st.players.b.y, 300);
+});
+
+test('결정적이다 — 같은 시작 상태면 players 오브젝트의 키 삽입 순서가 달라도 결과가 같다', () => {
+  const w = sim(), S = w.Sim;
+  const pids = ['a', 'b', 'c', 'd'];
+  let base = S.create(openRoom(w, 20, 12), pids);
+  /* 뭉쳐 두어야 충돌 해소 로직이 실제로 순서에 관여할 기회가 생긴다 */
+  for (const pid of pids) { base.players[pid].x = 300; base.players[pid].y = 300; }
+
+  const inp = { a: { x: 1, y: 0.3, seq: 1 }, c: { x: -1, y: 0, seq: 1 } };
+
+  let st1 = base;
+  let st2 = Object.assign({}, base, { players: reorderPlayers(base.players, ['d', 'b', 'a', 'c']) });
+
+  for (let i = 0; i < 5; i++) {
+    st1 = S.tick(st1, inp, 1 / 60);
+    st2 = S.tick(st2, inp, 1 / 60);
+    assert.strictEqual(canon(st1), canon(st2), '틱 ' + i + ' 에서 결과가 갈렸다');
+  }
+});
+
+test('옆에 다른 사람이 있어도 기계 작업은 그대로 된다 (충돌 해소가 REACH 밖으로 밀어내지 않는다)', () => {
+  const w = sim(), S = w.Sim;
+  let st = S.create(bench(w), ['a', 'b']);
+  stand(st, 'a', 'r', S);                        // a: 선반 옆, source 모드라 바로 든다
+  /* b 를 a 와 겹치도록 바짝 붙여 세운다 — 충돌 해소가 매 틱 개입할 수밖에 없다 */
+  st.players.b.x = st.players.a.x + 5;
+  st.players.b.y = st.players.a.y;
+
+  st = S.tick(st, { a: { x: 0, y: 0, seq: 1 } }, 1 / 60);
+
+  assert.strictEqual(st.players.a.hold, 'ref', '옆에 b 가 있어도 a 는 선반에서 집을 수 있어야 한다');
+});
