@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>오버워크드</title>
+<style>
+/* ============================================================
+   오버워크드 — UI (Y2K 네온 픽셀)
+
+   퇴근의 계단과 같은 팀이 하는 연작이라 톤을 그대로 이어받는다. 토큰도
+   같은 값이다 — 두 게임을 나란히 띄웠을 때 같은 세계로 보여야 한다.
+
+   규칙 넷:
+     1) 바탕은 거의 검은 딥퍼플, 색은 네온 시안·마젠타·옐로 셋
+     2) 테두리와 글자에 같은 색 글로우를 한 겹
+     3) 패널 위에 아주 옅은 픽셀 격자
+     4) 강조는 마젠타, 진행/성공은 시안, 숫자·기록은 옐로
+   ============================================================ */
+:root{
+  --bg-0:#0b0720;
+  --bg-1:#150e2e;
+  --bg-2:#1d1441;
+  --cyan:#3ce8d4;
+  --cyan-dim:#1a7d74;
+  --pink:#f83fa8;
+  --pink-dim:#8d1f5e;
+  --yellow:#ffd93d;
+  --purple:#a35cff;
+  --txt:#eaf6ff;
+  --txt-dim:#9b8fd0;
+  --font:"Pretendard Variable","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+  --mono:ui-monospace,"Consolas","Courier New",monospace;
+}
+*{box-sizing:border-box;}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--bg-0);
+  font-family:var(--font);color:var(--txt);
+  user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent;}
+.hidden{display:none !important;}
+
+.grid{position:relative;}
+.grid::before{
+  content:"";position:absolute;inset:0;pointer-events:none;border-radius:inherit;
+  background-image:
+    repeating-linear-gradient(0deg,rgba(255,255,255,.045) 0 1px,transparent 1px 3px),
+    repeating-linear-gradient(90deg,rgba(255,255,255,.045) 0 1px,transparent 1px 3px);
+}
+.neon{
+  background:linear-gradient(180deg,var(--bg-2),var(--bg-1));
+  border:2px solid var(--cyan);border-radius:12px;
+  box-shadow:0 0 0 1px rgba(60,232,212,.25), 0 0 16px rgba(60,232,212,.30),
+             inset 0 0 22px rgba(60,232,212,.10);
+}
+.btnx{transition:transform .07s ease, box-shadow .12s ease, filter .12s ease;}
+.btnx:active{transform:translateY(2px) scale(.985);}
+button{font-family:var(--font);color:var(--txt);cursor:pointer;}
+button:disabled{opacity:.45;cursor:default;}
+
+/* ---------- 화면 공통 ---------- */
+.screen{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+  padding:20px;overflow:auto;z-index:5;}
+.panel{width:min(680px,96vw);padding:24px 26px 28px;}
+h1{margin:0 0 4px;font-size:38px;letter-spacing:6px;text-align:center;
+  color:#fff;text-shadow:0 0 8px var(--pink),0 0 22px var(--pink),0 0 46px rgba(248,63,168,.7);}
+.sub{margin:0 0 20px;text-align:center;font-family:var(--mono);font-size:11px;
+  letter-spacing:2px;color:var(--txt-dim);}
+label{display:block;font-family:var(--mono);font-size:11px;letter-spacing:2px;
+  color:var(--cyan);margin:0 0 6px;text-shadow:0 0 8px rgba(60,232,212,.7);}
+input{width:100%;padding:12px 14px;font-family:var(--font);font-size:18px;
+  color:var(--txt);background:rgba(11,7,32,.75);border:2px solid var(--cyan-dim);
+  border-radius:10px;outline:none;}
+input:focus{border-color:var(--cyan);box-shadow:0 0 14px rgba(60,232,212,.35);}
+.row{display:flex;gap:10px;align-items:flex-end;margin-top:16px;}
+.row > *{flex:1;}
+.cta{min-height:52px;font-size:17px;font-weight:800;letter-spacing:2px;color:#fff;
+  border:none;border-radius:12px;
+  background:linear-gradient(120deg,var(--pink),var(--purple) 55%,var(--cyan));
+  box-shadow:0 0 18px rgba(248,63,168,.45);}
+.ghost{min-height:52px;font-size:16px;font-weight:700;letter-spacing:2px;
+  color:var(--cyan);background:transparent;border:2px dashed var(--cyan);
+  border-radius:12px;text-shadow:0 0 8px rgba(60,232,212,.8);}
+
+/* ---------- 캐릭터 고르기 ---------- */
+#charPick{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:8px;}
+.char{display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 2px 5px;
+  background:rgba(11,7,32,.6);border:2px solid rgba(163,92,255,.35);border-radius:10px;}
+.char.on{border-color:var(--pink);box-shadow:0 0 14px rgba(248,63,168,.5);
+  background:rgba(248,63,168,.10);}
+.char canvas{display:block;}
+.cname{font-family:var(--mono);font-size:9px;letter-spacing:0;color:var(--txt-dim);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;}
+.char.on .cname{color:var(--pink);}
+
+/* ---------- 대기실 ---------- */
+#roomCode{font-family:var(--mono);font-size:64px;font-weight:800;letter-spacing:14px;
+  text-align:center;color:var(--yellow);margin:6px 0 2px;
+  text-shadow:0 0 10px var(--yellow),0 0 30px rgba(255,217,61,.6);}
+#whoList{list-style:none;margin:14px 0 0;padding:0;display:grid;
+  grid-template-columns:repeat(2,1fr);gap:8px;}
+.wrow{display:flex;align-items:center;gap:8px;padding:6px 10px;
+  background:rgba(11,7,32,.6);border:2px solid rgba(60,232,212,.25);border-radius:10px;}
+.wrow.me{border-color:var(--cyan);box-shadow:0 0 12px rgba(60,232,212,.3);}
+.wname{flex:1;font-size:14px;font-weight:700;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;}
+.crown{font-size:15px;}
+
+/* ---------- 게임 ---------- */
+#screenGame{display:block;padding:0;background:#000;}
+/* 레터박스: 캔버스를 창 한가운데 겹쳐 놓는다. 두 장이 정확히 같은 자리에
+   있어야 바닥과 캐릭터가 어긋나지 않으므로 둘 다 같은 방식으로 가운데 잡는다. */
+#stage{position:absolute;inset:0;}
+#floor,#actors{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+  display:block;image-rendering:pixelated;}
+#floor{z-index:1;}
+#actors{z-index:2;}
+#topbar{position:fixed;left:0;right:0;top:0;z-index:6;display:flex;align-items:center;
+  gap:14px;padding:8px 14px;background:linear-gradient(180deg,rgba(11,7,32,.92),rgba(11,7,32,0));
+  pointer-events:none;}
+#goal{font-family:var(--mono);font-size:13px;letter-spacing:2px;color:var(--cyan);
+  text-shadow:0 0 8px rgba(60,232,212,.8);}
+#goal b{font-size:22px;color:var(--yellow);text-shadow:0 0 10px rgba(255,217,61,.8);
+  font-variant-numeric:tabular-nums;}
+#stat{margin-left:auto;font-family:var(--mono);font-size:11px;letter-spacing:1px;
+  color:var(--txt-dim);}
+#hint{position:fixed;left:0;right:0;bottom:6px;z-index:6;text-align:center;
+  font-family:var(--mono);font-size:11px;letter-spacing:1px;color:var(--txt-dim);
+  pointer-events:none;}
+#netWarn{position:fixed;left:0;right:0;top:0;z-index:9;padding:9px 12px;text-align:center;
+  font-family:var(--mono);font-size:12px;font-weight:700;letter-spacing:1px;color:#fff;
+  background:var(--pink-dim);border-bottom:2px solid var(--pink);
+  box-shadow:0 0 20px rgba(248,63,168,.6);}
+</style>
+</head>
+<body>
+
+<!-- 게임 화면. 캔버스 두 장 — #floor 는 바뀔 때만, #actors 만 매 프레임. -->
+<div id="screenGame" class="screen hidden">
+  <div id="stage">
+    <canvas id="floor"></canvas>
+    <canvas id="actors"></canvas>
+  </div>
+  <div id="topbar">
+    <div id="goal">납품 <b><span id="goalNow">0</span> / <span id="goalNeed">6</span></b></div>
+    <div id="stat"></div>
+  </div>
+  <div id="hint">이동 방향키·WASD &nbsp;·&nbsp; 집기/놓기/작업 스페이스 또는 Shift</div>
+</div>
+
+<!-- 시작 -->
+<div id="screenStart" class="screen">
+  <div class="panel neon grid">
+    <h1>오버워크드</h1>
+    <p class="sub">OVERWORKED — 3D 에셋 협동 공방</p>
+
+    <label for="nick">닉네임</label>
+    <input id="nick" maxlength="12" placeholder="이름 (최대 12자)" autocomplete="off">
+
+    <label style="margin-top:16px">캐릭터</label>
+    <div id="charPick"></div>
+
+    <div class="row">
+      <button id="btnCreate" class="cta btnx">방 만들기</button>
+    </div>
+    <div class="row">
+      <div style="flex:1.2">
+        <label for="roomInput">방 코드</label>
+        <input id="roomInput" maxlength="4" placeholder="ABCD" autocomplete="off"
+               style="font-family:var(--mono);letter-spacing:8px;text-align:center;">
+      </div>
+      <button id="btnJoin" class="ghost btnx">입장</button>
+    </div>
+  </div>
+</div>
+
+<!-- 대기실 -->
+<div id="screenLobby" class="screen hidden">
+  <div class="panel neon grid">
+    <p class="sub" style="margin-bottom:0">방 코드</p>
+    <div id="roomCode">----</div>
+    <div class="row">
+      <button id="btnCopyLink" class="ghost btnx">초대 링크 복사</button>
+    </div>
+    <ul id="whoList"></ul>
+    <div class="row">
+      <button id="btnStart" class="cta btnx">시작</button>
+    </div>
+    <p class="sub" style="margin:14px 0 0">
+      레퍼런스 선반 → 모델링 데스크 → 리토폴로지 → 납품대. 로우폴리 6개를 납품하면 끝.
+    </p>
+  </div>
+</div>
+
+<div id="netWarn" class="hidden"></div>
+
+<!-- 순서를 바꾸면 sim.js 가 World 를 못 찾는 식으로 조용히 깨진다.
+     game.js 는 반드시 마지막이다. -->
+<script src="js/cloud-config.js"></script>
+<script src="js/net.js"></script>
+<script src="js/room.js"></script>
+<script src="js/world.js"></script>
+<script src="js/stations.js"></script>
+<script src="js/sim.js"></script>
+<script src="js/snap.js"></script>
+<script src="js/interp.js"></script>
+<script src="js/sprite.js"></script>
+<script src="js/view.js"></script>
+<script src="js/hud.js"></script>
+<script src="js/game.js"></script>
+</body>
+</html>
