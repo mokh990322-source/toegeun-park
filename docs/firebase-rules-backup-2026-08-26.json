@@ -1,0 +1,18 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "scores": {
+      ".read": true,
+      "$who": {
+        ".write": true,
+        ".validate": "newData.hasChildren(['name','floor'])",
+        "name":  { ".validate": "newData.isString() && newData.val().length <= 12" },
+        "floor": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000" },
+        "date":  { ".validate": "newData.isString() && newData.val().length <= 12" },
+        "t":     { ".validate": "newData.isNumber()" },
+        "$other": { ".validate": false }
+      }
+    }
+  }
+}

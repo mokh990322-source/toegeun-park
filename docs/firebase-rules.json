@@ -1,0 +1,52 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "scores": {
+      ".read": true,
+      "$who": {
+        ".write": true,
+        ".validate": "newData.hasChildren(['name','floor'])",
+        "name":  { ".validate": "newData.isString() && newData.val().length <= 12" },
+        "floor": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000" },
+        "date":  { ".validate": "newData.isString() && newData.val().length <= 12" },
+        "t":     { ".validate": "newData.isNumber()" },
+        "$other": { ".validate": false }
+      }
+    },
+    "rooms": {
+      "$code": {
+        ".read": "$code.length == 4",
+        ".write": "$code.length == 4",
+        "meta": {
+          ".validate": "newData.hasChildren(['host','phase'])",
+          "host":  { ".validate": "newData.isString() && newData.val().length <= 24" },
+          "phase": { ".validate": "newData.isString() && (newData.val() == 'lobby' || newData.val() == 'play' || newData.val() == 'result')" },
+          "stage": { ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 6" },
+          "born":  { ".validate": "newData.isNumber()" },
+          "$other": { ".validate": false }
+        },
+        "who": {
+          "$pid": {
+            "name": { ".validate": "newData.isString() && newData.val().length <= 12" },
+            "char": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 7" },
+            "join": { ".validate": "newData.isNumber()" },
+            "seen": { ".validate": "newData.isNumber()" },
+            "gear": { ".validate": "newData.hasChildren()" }
+          }
+        },
+        "in": {
+          "$pid": {
+            "x":   { ".validate": "newData.isNumber() && newData.val() >= -1 && newData.val() <= 1" },
+            "y":   { ".validate": "newData.isNumber() && newData.val() >= -1 && newData.val() <= 1" },
+            "act": { ".validate": "newData.isNumber()" },
+            "seq": { ".validate": "newData.isNumber()" },
+            "$other": { ".validate": false }
+          }
+        },
+        "st": { ".validate": "newData.hasChild('t')" },
+        "$other": { ".validate": false }
+      }
+    }
+  }
+}
