@@ -29,6 +29,8 @@
   --purple:#a35cff;
   --txt:#eaf6ff;
   --txt-dim:#9b8fd0;
+  --txt-hi:#c9bdf5;     /* txt-dim 은 라벨·힌트로 쓰기엔 너무 어둡다. 토큰 넷은
+                            그대로 두고, 저대비 문제만 이 밝은 보라 하나로 고친다. */
   --font:"Pretendard Variable","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
   --mono:ui-monospace,"Consolas","Courier New",monospace;
 }
@@ -62,9 +64,9 @@ button:disabled{opacity:.45;cursor:default;}
 .panel{width:min(680px,96vw);padding:24px 26px 28px;}
 h1{margin:0 0 4px;font-size:38px;letter-spacing:6px;text-align:center;
   color:#fff;text-shadow:0 0 8px var(--pink),0 0 22px var(--pink),0 0 46px rgba(248,63,168,.7);}
-.sub{margin:0 0 20px;text-align:center;font-family:var(--mono);font-size:11px;
-  letter-spacing:2px;color:var(--txt-dim);}
-label{display:block;font-family:var(--mono);font-size:11px;letter-spacing:2px;
+.sub{margin:0 0 20px;text-align:center;font-family:var(--mono);font-size:13px;
+  letter-spacing:2px;color:var(--txt-hi);}
+label{display:block;font-family:var(--mono);font-size:14px;font-weight:700;letter-spacing:2px;
   color:var(--cyan);margin:0 0 6px;text-shadow:0 0 8px rgba(60,232,212,.7);}
 input{width:100%;padding:12px 14px;font-family:var(--font);font-size:18px;
   color:var(--txt);background:rgba(11,7,32,.75);border:2px solid var(--cyan-dim);
@@ -80,29 +82,74 @@ input:focus{border-color:var(--cyan);box-shadow:0 0 14px rgba(60,232,212,.35);}
   color:var(--cyan);background:transparent;border:2px dashed var(--cyan);
   border-radius:12px;text-shadow:0 0 8px rgba(60,232,212,.8);}
 
-/* ---------- 캐릭터 고르기 ---------- */
-#charPick{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:8px;}
-.char{display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 2px 5px;
+/* ---------- 캐릭터 고르기 ----------
+   시작 화면(#charPick)과 대기실(#charPickLobby) 둘 다 이 .char 카드를 쓴다.
+   얼굴을 알아볼 크기(84px 폭)로 키우고 이름도 13px 이상으로 올렸다 —
+   "이 카드가 이 게임의 얼굴이다"인데 9px 이름표로는 아무도 못 읽었다. */
+#charPick,#charPickLobby{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:8px;}
+.char{display:flex;flex-direction:column;align-items:center;gap:3px;padding:8px 3px 7px;
   background:rgba(11,7,32,.6);border:2px solid rgba(163,92,255,.35);border-radius:10px;}
 .char.on{border-color:var(--pink);box-shadow:0 0 14px rgba(248,63,168,.5);
   background:rgba(248,63,168,.10);}
 .char canvas{display:block;}
-.cname{font-family:var(--mono);font-size:9px;letter-spacing:0;color:var(--txt-dim);
+.cname{font-family:var(--mono);font-size:13px;letter-spacing:0;color:var(--txt-hi);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;}
 .char.on .cname{color:var(--pink);}
+/* 잠긴 칸 — 다른 사람이 이미 고른 캐릭터. 지워버리듯 흐리고 줄을 긋는다.
+   "고장났다"가 아니라 "이미 임자가 있다"로 읽혀야 한다. */
+.char.locked{opacity:.45;background:rgba(11,7,32,.35);cursor:default;}
+.char.locked .cname{text-decoration:line-through;color:var(--txt-dim);}
+.claim{display:none;font-family:var(--mono);font-size:13px;color:var(--yellow);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;}
+.char.locked .claim{display:block;}
 
-/* ---------- 대기실 ---------- */
-#roomCode{font-family:var(--mono);font-size:64px;font-weight:800;letter-spacing:14px;
-  text-align:center;color:var(--yellow);margin:6px 0 2px;
+/* ---------- 대기실 ----------
+   우선순위를 뒤집는다: 누가 와 있는지(로스터)가 제일 크고, 링크 복사는
+   보조 버튼으로 내려간다. 방 코드 옆에 인원수(N / 8)를 붙여 언제 시작해도
+   되는지 한눈에 보이게 한다. */
+.lobbyHead{display:flex;align-items:flex-end;justify-content:center;gap:18px;
+  flex-wrap:wrap;margin-bottom:2px;}
+#roomCode{font-family:var(--mono);font-size:56px;font-weight:800;letter-spacing:12px;
+  text-align:center;color:var(--yellow);margin:2px 0 2px;
   text-shadow:0 0 10px var(--yellow),0 0 30px rgba(255,217,61,.6);}
+#playerCount{font-family:var(--mono);font-size:22px;font-weight:800;color:var(--cyan);
+  text-shadow:0 0 8px rgba(60,232,212,.7);padding-bottom:10px;
+  font-variant-numeric:tabular-nums;}
+
+/* 로스터 — 얼굴·이름·캐릭터가 다 보여야 "누가 뭘로 하는지"가 읽힌다 */
 #whoList{list-style:none;margin:14px 0 0;padding:0;display:grid;
-  grid-template-columns:repeat(2,1fr);gap:8px;}
-.wrow{display:flex;align-items:center;gap:8px;padding:6px 10px;
-  background:rgba(11,7,32,.6);border:2px solid rgba(60,232,212,.25);border-radius:10px;}
+  grid-template-columns:repeat(2,1fr);gap:10px;}
+.wrow{display:flex;align-items:center;gap:10px;padding:8px 12px;
+  background:rgba(11,7,32,.6);border:2px solid rgba(60,232,212,.25);border-radius:12px;}
 .wrow.me{border-color:var(--cyan);box-shadow:0 0 12px rgba(60,232,212,.3);}
-.wname{flex:1;font-size:14px;font-weight:700;overflow:hidden;text-overflow:ellipsis;
+.wface{border-radius:6px;flex:none;}
+.wtext{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px;}
+.wname{font-size:15px;font-weight:700;overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;}
-.crown{font-size:15px;}
+.wchar{font-family:var(--mono);font-size:13px;color:var(--txt-hi);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.crown{font-size:17px;flex:none;}
+
+/* 캐릭터 바꾸기(대기실) — 시작 화면 카드와 같은 모양을 쓰되 잠금 상태만 는다 */
+#charPickLobby{margin-bottom:4px;}
+
+/* 공정 파이프라인 — 글로 안 읽던 걸 게임에서 쓰는 색 그대로 보여준다.
+   레퍼런스→모델링→리토폴→납품, 물건이 실제로 거쳐가는 색(sprite.js ITEMS)과
+   맞춘다. 납품만 노랑인 이유는 상단바 납품 숫자(#goal b)도 노랑이라서다. */
+.pipeline{display:flex;align-items:center;justify-content:center;gap:6px;
+  flex-wrap:wrap;margin-top:14px;padding:10px 8px;border-radius:10px;
+  background:rgba(11,7,32,.5);}
+.pstep{display:flex;align-items:center;gap:6px;font-family:var(--mono);
+  font-size:13px;font-weight:700;color:var(--pc);letter-spacing:.5px;}
+.pdot{width:12px;height:12px;border-radius:3px;background:var(--pc);
+  box-shadow:0 0 8px var(--pc);flex:none;}
+.parrow{color:var(--txt-dim);font-size:14px;}
+
+.controlsHint{margin:12px 0 0;text-align:center;font-family:var(--mono);
+  font-size:14px;letter-spacing:.5px;color:var(--txt-hi);}
+.controlsHint b{color:var(--yellow);text-shadow:0 0 8px rgba(255,217,61,.6);}
+
+.ghost.small{min-height:40px;font-size:13px;flex:none;padding:0 16px;}
 
 /* ---------- 게임 ---------- */
 #screenGame{display:block;padding:0;background:#000;}
@@ -120,11 +167,11 @@ input:focus{border-color:var(--cyan);box-shadow:0 0 14px rgba(60,232,212,.35);}
   text-shadow:0 0 8px rgba(60,232,212,.8);}
 #goal b{font-size:22px;color:var(--yellow);text-shadow:0 0 10px rgba(255,217,61,.8);
   font-variant-numeric:tabular-nums;}
-#stat{margin-left:auto;font-family:var(--mono);font-size:11px;letter-spacing:1px;
-  color:var(--txt-dim);}
+#stat{margin-left:auto;font-family:var(--mono);font-size:13px;letter-spacing:1px;
+  color:var(--txt-hi);}
 #hint{position:fixed;left:0;right:0;bottom:6px;z-index:6;text-align:center;
-  font-family:var(--mono);font-size:11px;letter-spacing:1px;color:var(--txt-dim);
-  pointer-events:none;}
+  font-family:var(--mono);font-size:14px;letter-spacing:1px;color:var(--txt-hi);
+  pointer-events:none;text-shadow:0 0 6px rgba(11,7,32,.9);}
 #netWarn{position:fixed;left:0;right:0;top:0;z-index:9;padding:9px 12px;text-align:center;
   font-family:var(--mono);font-size:12px;font-weight:700;letter-spacing:1px;color:#fff;
   background:var(--pink-dim);border-bottom:2px solid var(--pink);
@@ -164,7 +211,7 @@ input:focus{border-color:var(--cyan);box-shadow:0 0 14px rgba(60,232,212,.35);}
     <div class="row">
       <div style="flex:1.2">
         <label for="roomInput">방 코드</label>
-        <input id="roomInput" maxlength="4" placeholder="ABCD" autocomplete="off"
+        <input id="roomInput" maxlength="4" placeholder="----" autocomplete="off"
                style="font-family:var(--mono);letter-spacing:8px;text-align:center;">
       </div>
       <button id="btnJoin" class="ghost btnx">입장</button>
@@ -172,21 +219,39 @@ input:focus{border-color:var(--cyan);box-shadow:0 0 14px rgba(60,232,212,.35);}
   </div>
 </div>
 
-<!-- 대기실 -->
+<!-- 대기실. 누가 와 있는지(로스터)가 가장 크고, 초대 링크 복사는 보조
+     버튼으로 내렸다 — 시작 전에 사람들이 실제로 보는 것은 "누가 왔고 뭘로
+     하는지"이지 복사 버튼이 아니다. -->
 <div id="screenLobby" class="screen hidden">
   <div class="panel neon grid">
-    <p class="sub" style="margin-bottom:0">방 코드</p>
-    <div id="roomCode">----</div>
-    <div class="row">
-      <button id="btnCopyLink" class="ghost btnx">초대 링크 복사</button>
+    <div class="lobbyHead">
+      <div>
+        <p class="sub" style="margin-bottom:0">방 코드</p>
+        <div id="roomCode">----</div>
+      </div>
+      <div id="playerCount">0 / 8</div>
     </div>
+
     <ul id="whoList"></ul>
+
+    <label style="margin-top:16px">캐릭터 바꾸기</label>
+    <div id="charPickLobby"></div>
+
+    <div class="pipeline" id="pipeline">
+      <div class="pstep" style="--pc:var(--txt-hi)"><span class="pdot"></span>레퍼런스</div>
+      <span class="parrow">→</span>
+      <div class="pstep" style="--pc:var(--pink)"><span class="pdot"></span>모델링</div>
+      <span class="parrow">→</span>
+      <div class="pstep" style="--pc:var(--cyan)"><span class="pdot"></span>리토폴</div>
+      <span class="parrow">→</span>
+      <div class="pstep" style="--pc:var(--yellow)"><span class="pdot"></span>납품</div>
+    </div>
+    <p class="controlsHint">방향키로 이동 &nbsp;·&nbsp; <b>Space</b> 로 집기·놓기·작업</p>
+
     <div class="row">
       <button id="btnStart" class="cta btnx">시작</button>
+      <button id="btnCopyLink" class="ghost btnx small">초대 링크 복사</button>
     </div>
-    <p class="sub" style="margin:14px 0 0">
-      레퍼런스 선반 → 모델링 데스크 → 리토폴로지 → 납품대. 로우폴리 6개를 납품하면 끝.
-    </p>
   </div>
 </div>
 

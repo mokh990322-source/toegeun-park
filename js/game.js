@@ -26,6 +26,7 @@
   var View = global.View, Hud = global.Hud, Sprite = global.Sprite;
 
   var MAP = W.STAGE1;
+  var MAX_PLAYERS = 8;          // 대기실 인원수 표시(N / 8)에 쓴다
   var SEND_HZ = 8;             // 입력 쓰기 상한 (초당). 사람 손보다 빠르다.
   var SNAP_HZ = 10;            // 호스트 스냅샷
   var SEEN_MS = 2000;          // heartbeat — SEEN_TIMEOUT(10초)의 5분의 1
@@ -146,13 +147,33 @@
     if (!c) { Hud.toast('코드는 네 글자입니다 (I, L, O, 0, 1 은 안 씁니다)'); return; }
     Net.get('rooms/' + c + '/meta').then(function (m) {
       if (!m || !m.host) { Hud.toast(c + ' 방이 없습니다'); return; }
-      enter(c);
+      /* 저장해 둔 캐릭터가 이미 방에 있으면 조용히 빈 칸으로 옮긴다.
+         새로 들어온 사람이 "그 캐릭터는 못 씁니다" 에러부터 보는 것보다
+         낫다 — 고칠 게 없어야 바로 놀 수 있다. */
+      Net.get('rooms/' + c + '/who').then(function (w) {
+        myChar = resolveChar(w, pid, myChar);
+        Hud.setPick(myChar);
+        enter(c);
+      });
     });
   }
 
   function doStart() {
     if (!isHost()) return;
     Net.put('rooms/' + code + '/meta/phase', 'play').then(countWrite);
+  }
+
+  /* 대기실에서 캐릭터를 바꾼다. Hud 가 이미 잠긴 칸의 클릭을 막지만,
+     여기서도 한 번 더 확인한다 — HUD 는 200ms 주기로만 다시 그려서,
+     그 틈에 누가 먼저 그 캐릭터를 가져갔으면 화면이 아직 잠긴 것으로
+     안 보일 수 있다. */
+  function doPickChar(i) {
+    if (!code || !pid) return;
+    var used = usedCharMap(who, pid);
+    if (used[i]) return;
+    myChar = i;
+    try { global.localStorage.setItem('ow.char', String(i)); } catch (e) {}
+    Net.put('rooms/' + code + '/who/' + pid + '/char', i).then(countWrite);
   }
 
   /* ============================================================
@@ -184,6 +205,43 @@
 
   function aliveList() {
     return Room.alive(who, Date.now());
+  }
+
+  /* ============================================================
+     캐릭터 겹침 방지
+
+     같은 방에 숭한 라이언이 둘이면 대기실도 게임 화면도 "누가 누구야"가
+     안 된다. seen 이 낡아 나간 사람(Room.alive 가 빼는 사람)의 캐릭터는
+     다시 풀린다 — 나갔는데 캐릭터 하나가 영영 묶여 있으면 8명 방이
+     7명한테 8칸을 못 준다.
+     ============================================================ */
+
+  /* whoObj: {pid:{name,char,...}}. exceptPid 는 결과에서 뺀다 — "내가 지금
+     쓰고 있는 칸"과 "남이 쓰는 칸"을 갈라야 자기 자신 때문에 자기가
+     잠기지 않는다. */
+  function usedCharMap(whoObj, exceptPid) {
+    var out = {};
+    var ids = Room.alive(whoObj, Date.now());
+    for (var i = 0; i < ids.length; i++) {
+      var p = ids[i];
+      if (p === exceptPid) continue;
+      var w = whoObj && whoObj[p];
+      if (!w) continue;
+      out[w.char | 0] = { pid: p, name: w.name || '???' };
+    }
+    return out;
+  }
+
+  /* 원하는 캐릭터가 이미 남의 것이면 조용히 빈 칸으로 옮긴다. 8명이 최대고
+     캐릭터도 8종이라 항상 빈 칸이 있지만, 그 가정이 깨져도(버그·데이터
+     꼬임) want 를 그대로 돌려줘서 죽지 않게 한다. */
+  function resolveChar(whoObj, exceptPid, want) {
+    var used = usedCharMap(whoObj, exceptPid);
+    if (!used[want]) return want;
+    for (var i = 0; i < Sprite.CHARS.length; i++) {
+      if (!used[i]) return i;
+    }
+    return want;
   }
 
   function allInputs() {
@@ -359,6 +417,8 @@
 
     var alive = aliveList();
     Hud.setWho(who, alive, meta && meta.host, pid, isHost());
+    Hud.setCount(alive.length, MAX_PLAYERS);
+    Hud.setLobbyCharPick(usedCharMap(who, pid), myChar);
     if (drawState) Hud.setGoal(drawState.done, drawState.goal.count);
 
     var quiet = (lastEventAt !== null) && (nowMs - lastEventAt > WARN_MS);
@@ -475,7 +535,7 @@
   function boot() {
     pid = makePid();
 
-    Hud.init({ create: doCreate, join: doJoin, start: doStart });
+    Hud.init({ create: doCreate, join: doJoin, start: doStart, pickChar: doPickChar });
 
     var els = Hud.els();
     try {
