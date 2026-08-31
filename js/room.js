@@ -109,10 +109,12 @@
        방이 살아 있는 한 초당 여러 번은 뭔가 온다. 그게 HOST_TIMEOUT 만큼
        조용하면 조용한 건 호스트가 아니라 나 자신이니 나서면 안 된다.
        값이 없으면(옛 호출부, 아직 한 번도 못 잼) 안 죽은 것으로 본다 —
-       그래야 이 정보가 없다는 이유로 승계가 영영 막히지 않는다. */
-    var iAmDeaf = (o.lastEventMs !== null && o.lastEventMs !== undefined) &&
-                  (now - o.lastEventMs > HOST_TIMEOUT * 1000);
-    if (iAmDeaf) return 'none';
+       그래야 이 정보가 없다는 이유로 승계가 영영 막히지 않는다.
+       0 도 "아직 한 번도 못 잼"으로 본다 — 이 코드베이스가 그렇게 쓰기 때문이다
+       (같은 옵션의 claimedAtMs: 0, alive() 의 w.seen || 0). 0 을 실제 시각으로
+       읽으면 now - 0 이 언제나 3초를 넘어 영원히 'none' 이 나오고, 그 방은
+       호스트가 죽어도 아무도 승계하지 못한다. */
+    if (o.lastEventMs && now - o.lastEventMs > HOST_TIMEOUT * 1000) return 'none';
 
     var list = alive(o.who, now);
     var noSnapshotYet = (o.lastTick === null || o.lastTick === undefined);

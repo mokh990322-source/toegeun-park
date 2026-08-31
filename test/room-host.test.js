@@ -223,6 +223,26 @@ test('lastEventMs 가 없으면(옛 호출부) 예전처럼 동작한다', () =>
   assert.strictEqual(r.shouldClaim(o), 'claim', 'lastEventMs 없다고 승계가 막히면 안 된다');
 });
 
+/* 이 코드베이스는 "아직 없음"을 0 으로 쓴다(claimedAtMs: 0, w.seen || 0).
+   조립 코드가 var lastEventAt = 0 으로 시작하는 것이 가장 자연스러운데,
+   0 을 실제 시각으로 읽으면 now - 0 이 항상 HOST_TIMEOUT 을 넘어 그 방은
+   호스트가 죽어도 영원히 승계되지 않는다. 생략과 똑같이 굴어야 한다. */
+test('lastEventMs 가 0 이면 생략과 똑같이 동작한다', () => {
+  const r = R();
+  const ms = r.HOST_TIMEOUT * 1000;
+  const w = who({ a: { join: 1, agoSec: 1 }, b: { join: 2, agoSec: 1 } });
+  const base = {
+    me: 'b', host: 'a',
+    who: w,
+    lastTick: 50, lastChangeMs: NOW - ms - 500,
+    nowMs: NOW, claimedAtMs: 0
+  };
+  const omitted = r.shouldClaim(base);
+  const zero = r.shouldClaim(Object.assign({}, base, { lastEventMs: 0 }));
+  assert.strictEqual(omitted, 'claim');
+  assert.strictEqual(zero, omitted, 'lastEventMs: 0 이 승계를 영영 막으면 안 된다');
+});
+
 test('틱이 흐르고 있으면 seen 이 낡아도 호스트는 산다', () => {
   const r = R();
   // 호스트 a의 heartbeat는 99초 전 (완전히 낡음)
