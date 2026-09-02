@@ -1,17 +1,16 @@
 /* ============================================================
-   오버워크드 — 그리기
+   퇴근파크 — 그리기
 
-   이 파일은 판정을 하지 않는다. "이 사람이 기계에 닿았나", "이걸 놓을 수
-   있나"를 여기서 다시 계산하면 호스트와 답이 갈려서, 화면에는 닿았다고
-   나오는데 눌러도 아무 일이 안 일어나는 상태가 된다. 필요한 것은 전부
-   스냅샷에 들어 있다. 여기서 하는 계산은 걷는 위상(다리 흔들기)처럼
+   이 파일은 판정을 하지 않는다. "이 사람이 버튼을 눌렀나", "문이 열렸나"를
+   여기서 다시 계산하면 호스트와 답이 갈려서, 화면에는 열렸다고 나오는데
+   지나가면 막혀 있는 상태가 된다. 필요한 것은 전부 state 에 들어 있다
+   (state.door, player.sup, player.done). 여기서 하는 계산은 걷는 위상처럼
    틀려도 아무도 손해 보지 않는 것뿐이다.
 
    ── 캔버스가 두 장인 이유 ───────────────────────────────
-   #floor(맵·기계 몸통)는 창 크기가 바뀔 때만 다시 그린다. #actors(캐릭터·
-   물건·진행 막대)만 매 프레임이다. 맵을 60Hz 로 다시 그리면 타일 576개와
-   기계 5개를 초당 60번 칠하게 되는데, 8명이 붙은 방에서 이건 느린 PC 가
-   먼저 죽는 이유가 된다.
+   #floor(벽·출입구 몸통)는 창 크기가 바뀌거나 판이 바뀔 때만 다시 그린다.
+   #actors(캐릭터·버튼·문·진행 표시)만 매 프레임이다. 벽 576칸을 60Hz 로
+   다시 그리면 8명이 붙은 방에서 이건 느린 PC 가 먼저 죽는 이유가 된다.
 
    ── 좌표 ────────────────────────────────────────────────
    전부 1280x720 디자인 좌표다. 배율은 setTransform 으로 ctx 에 한 번만
@@ -21,36 +20,21 @@
 (function (global) {
   'use strict';
 
-  var W = null, St = null;
-  function deps() {
-    if (!W) W = global.World;
-    if (!St) St = global.Stations;
-  }
+  var L = null;
+  function deps() { if (!L) L = global.Levels; }
 
-  var TILE = 40;
   var scale = 1, dpr = 1;
   var floorDirty = true;
   var sized = false;            // "이미 캔버스를 배치했다" — width 로 추측하지 않는다.
                                  // 빈 <canvas> 의 기본값(300)이 우연히 배율 1과
                                  // 맞아떨어지는 창(1280 이상 너비)에서 첫 호출이
                                  // 조기반환해 캔버스가 300x150 으로 굳는 사고가 났다.
-
-  /* 기계 색 — 물건 색과 같은 계열로 맞춘다. 모델링대(마젠타)에서 나온 것이
-     마젠타 덩어리라는 게 색으로 바로 읽혀야 한다. */
-  var MACH = {
-    ref:    { top: '#6b5fb0', glow: '#9b8fd0' },
-    model:  { top: '#b02a72', glow: '#f83fa8' },
-    retopo: { top: '#1a7d74', glow: '#3ce8d4' },
-    uv:     { top: '#b09220', glow: '#ffd93d' },
-    bake:   { top: '#a04a20', glow: '#ff7a3a' },
-    rig:    { top: '#6a35a8', glow: '#a35cff' },
-    farm:   { top: '#4a5570', glow: '#9fb4ff' },
-    ship:   { top: '#8a6a12', glow: '#ffd93d' },
-    bin:    { top: '#3a3547', glow: '#6b6480' }
-  };
+  var lastLv = -1;               // 마지막으로 바닥을 그린 판 번호 — 판이 바뀌면
+                                  // 리사이즈가 없어도 바닥을 다시 그려야 한다.
+  var geo = null;                // { lv, buttons:[{x,y}], doors:[{x,y}], exits:[...] } 캐시
 
   /* 걷는 위상은 화면에서만 쓰는 값이라 여기서 갖는다. 시뮬레이션에 넣으면
-     스냅샷에 실려 전송량만 늘고, 어차피 남의 tap/seq 는 오지도 않는다. */
+     스냅샷에 실려 전송량만 늘고, 어차피 남의 입력 계열은 오지도 않는다. */
   var walk = {};
 
   function rr(ctx, x, y, w, h, r) {
@@ -98,7 +82,7 @@
     if (!isCanvas(actorsCv)) actorsCv = byId('actors');
     if (!isCanvas(floorCv) || !isCanvas(actorsCv)) return scale;
 
-    var s = Math.min(global.innerWidth / W.W, global.innerHeight / W.H);
+    var s = Math.min(global.innerWidth / L.W, global.innerHeight / L.H);
     if (!(s > 0)) s = 1;
     /* 배속 화면에서 글자가 뭉개지지 않게 픽셀 밀도를 반영하되 2배에서 끊는다.
        3배까지 올리면 4K 에서 캔버스가 갑자기 세 배로 무거워진다. */
@@ -111,10 +95,10 @@
     scale = s; dpr = d;
     sized = true;
 
-    var cssW = Math.round(W.W * s), cssH = Math.round(W.H * s);
+    var cssW = Math.round(L.W * s), cssH = Math.round(L.H * s);
     [floorCv, actorsCv].forEach(function (cv) {
-      cv.width = Math.round(W.W * s * d);
-      cv.height = Math.round(W.H * s * d);
+      cv.width = Math.round(L.W * s * d);
+      cv.height = Math.round(L.H * s * d);
       cv.style.width = cssW + 'px';
       cv.style.height = cssH + 'px';
     });
@@ -128,175 +112,292 @@
     return c;
   }
 
-  /* ---------- 바닥 (바뀔 때만) ---------- */
-  function drawFloorLayer(ctx, map) {
+  /* ---------- 판 하나에서 버튼·문 칸 위치를 뽑는다 ----------
+     판이 바뀔 때만 다시 훑는다. 버튼·문 상태(눌렸나/열렸나)는 여기서
+     안 정한다 — 위치만 캐시하고, 실제로 눌렸는지·열렸는지는 매 프레임
+     state.door 를 그대로 읽는다. */
+  function analyze(lv, lvIndex) {
+    if (geo && geo.lv === lvIndex) return geo;
+    var buttons = [], doors = [];
+    for (var cy = 0; cy < L.ROWS; cy++) {
+      for (var cx = 0; cx < L.COLS; cx++) {
+        var t = lv.grid[cy * L.COLS + cx];
+        var x = cx * L.TILE, y = cy * L.TILE;
+        if (t === 'B') buttons.push({ x: x, y: y });
+        else if (t === 'D') doors.push({ x: x, y: y });
+      }
+    }
+    geo = { lv: lvIndex, buttons: buttons, doors: doors };
+    return geo;
+  }
+
+  /* ---------- 바닥 (판이 바뀌거나 리사이즈될 때만) ----------
+     여기 그리는 건 전부 판이 안 바뀌면 안 바뀌는 것들 — 벽과 출입구.
+     버튼·문은 위치만 여기서 잡고, 눌림/열림 표시는 actors 레이어가 매
+     프레임 그 자리 위에 덧그린다(state.door 를 그대로 읽는다). */
+  function drawFloorLayer(ctx, lv, lvIndex) {
     deps();
-    ctx.clearRect(0, 0, W.W, W.H);
+    var g = analyze(lv, lvIndex);
+    var TILE = L.TILE;
 
-    /* 바닥 */
+    ctx.clearRect(0, 0, L.W, L.H);
     ctx.fillStyle = '#150e2e';
-    ctx.fillRect(0, 0, W.W, W.H);
+    ctx.fillRect(0, 0, L.W, L.H);
 
-    for (var cy = 0; cy < map.rows; cy++) {
-      for (var cx = 0; cx < map.cols; cx++) {
-        var t = map.grid[cy * map.cols + cx];
+    for (var cy = 0; cy < L.ROWS; cy++) {
+      for (var cx = 0; cx < L.COLS; cx++) {
+        var t = lv.grid[cy * L.COLS + cx];
         var x = cx * TILE, y = cy * TILE;
         if (t === '#') {
           fillRR(ctx, x + 1, y + 1, TILE - 2, TILE - 2, 4, '#241a52');
-          ctx.fillStyle = 'rgba(163,92,255,.28)';
+          ctx.fillStyle = 'rgba(163,92,255,.28)';       // --purple
           ctx.fillRect(x + 1, y + 1, TILE - 2, 3);
-        } else if (t === 'S') {
-          fillRR(ctx, x + 1, y + 1, TILE - 2, TILE - 2, 4, '#1d1441');
         } else {
-          /* 격자를 아주 옅게 — 바닥이 완전히 평평하면 속도감이 안 난다 */
+          /* 격자를 아주 옅게 — 완전히 평평하면 판이 밋밋해 보인다 */
           ctx.fillStyle = ((cx + cy) % 2) ? 'rgba(255,255,255,.020)' : 'rgba(255,255,255,.035)';
           ctx.fillRect(x, y, TILE, TILE);
         }
       }
     }
 
-    /* 기계 몸통과 이름. 이름은 여기(바닥)에 그린다 — 매 프레임 한글 다섯 자를
-       다섯 번 쓰면 텍스트 레이아웃이 프레임 예산을 갉아먹는다. */
-    for (var i = 0; i < map.stations.length; i++) {
-      var s = map.stations[i];
-      var d = MACH[s.type] || MACH.bin;
-      var def = St.get(s.type);
-      var isBin = s.type === 'bin';
-      var w = isBin ? 40 : 72, h = isBin ? 40 : 40;
-      var bx = s.cx - w / 2, by = s.cy - h / 2;
+    /* 버튼·문 자리는 소켓만 미리 박아 둔다. 실제 빛(눌림/열림)은 actors 가
+       매 프레임 위에 그린다 — 상태가 자주 바뀌는 걸 바닥에 두면 그때마다
+       바닥 전체를 다시 그려야 한다. */
+    for (var bi = 0; bi < g.buttons.length; bi++) {
+      var b = g.buttons[bi];
+      fillRR(ctx, b.x + 4, b.y + TILE - 10, TILE - 8, 8, 3, '#241a1a');
+    }
+    for (var di = 0; di < g.doors.length; di++) {
+      var d = g.doors[di];
+      ctx.strokeStyle = 'rgba(163,92,255,.55)';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(d.x + 2, d.y + 2, TILE - 4, TILE - 4);
+    }
 
-      /* 벽에 붙은 기계는 두 칸(SS)을 차지한다. cx 는 안쪽 칸의 가운데라
-         바깥쪽으로 반 칸 밀어야 두 칸을 정확히 덮는다. */
-      if (!isBin) bx = (s.cx < W.W / 2) ? s.cx - 56 : s.cx - 16;
-
+    /* 출입구 — 전원이 여기 모여야 판이 끝난다. 늘 켜져 있는 표식으로
+       "여기가 목표다"를 알린다. 실제 도착 판정은 그리지 않는다(player.done
+       이 말한다). */
+    if (lv.goal) {
+      var gx = lv.goal.x, gy = lv.goal.y, gw = lv.goal.w, gh = lv.goal.h;
       ctx.save();
-      ctx.shadowColor = d.glow;
-      ctx.shadowBlur = 14;
-      fillRR(ctx, bx, by, w, h, 7, '#0e0a24');
+      ctx.shadowColor = '#3ce8d4';
+      ctx.shadowBlur = 16;
+      fillRR(ctx, gx + 2, gy + 2, gw - 4, gh - 4, 6, 'rgba(60,232,212,.14)');
       ctx.restore();
+      ctx.strokeStyle = '#3ce8d4';
+      ctx.lineWidth = 2;
+      rr(ctx, gx + 2, gy + 2, gw - 4, gh - 4, 6);
+      ctx.stroke();
 
-      fillRR(ctx, bx + 2, by + 2, w - 4, h - 4, 6, d.top);
-      fillRR(ctx, bx + 5, by + 5, w - 10, h - 16, 4, 'rgba(10,7,26,.55)');
-
-      ctx.fillStyle = d.glow;
-      ctx.font = '700 11px ui-monospace,Consolas,monospace';
+      ctx.fillStyle = '#3ce8d4';
+      ctx.font = '700 12px ui-monospace,Consolas,monospace';
       ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      var ly = (s.cy < W.H / 2) ? by + h + 11 : by - 11;
-      ctx.fillText(def ? def.name : s.type, s.cx, ly);
+      ctx.textBaseline = 'bottom';
+      ctx.fillText('EXIT', gx + gw / 2, gy - 6);
     }
   }
 
-  /* ---------- 진행 막대 ----------
-     tap 기계는 "몇 번 두드렸나"(0..work), wait 기계는 익음(0..1)과
-     탐(1..2)이다. 익은 뒤 타는 구간은 색을 바꿔서 "지금 가야 한다"를 알린다. */
-  function drawProgress(ctx, m, def, cx, cy) {
-    if (!def || !m.item) return;
-    var frac = 0, color = '#3ce8d4';
+  /* ---------- 버튼·문 (매 프레임, state.door 그대로) ---------- */
+  function drawSwitches(ctx, lv, lvIndex, doorOpen) {
+    var g = analyze(lv, lvIndex);
+    var TILE = L.TILE;
 
-    if (def.mode === 'tap') {
-      if (!St.canAccept(m.type, m.item)) return;    // 다 된 물건은 막대가 없다
-      frac = def.work ? (m.prog || 0) / def.work : 0;
-      color = '#ffd93d';
-    } else if (def.mode === 'wait') {
-      var p = m.prog || 0;
-      if (p <= 1) { frac = p; }
-      else { frac = p - 1; color = '#f83fa8'; }     // 타는 중
-    } else {
-      return;
+    for (var bi = 0; bi < g.buttons.length; bi++) {
+      var b = g.buttons[bi];
+      var color = doorOpen ? '#ffd93d' : '#7a6a2a';        // --yellow, 안 눌리면 어둡다
+      ctx.save();
+      if (doorOpen) { ctx.shadowColor = '#ffd93d'; ctx.shadowBlur = 12; }
+      fillRR(ctx, b.x + 5, b.y + TILE - (doorOpen ? 7 : 9), TILE - 10, doorOpen ? 5 : 3, 2, color);
+      ctx.restore();
     }
-    if (frac <= 0) return;
-    if (frac > 1) frac = 1;
+    for (var di = 0; di < g.doors.length; di++) {
+      var d = g.doors[di];
+      if (doorOpen) {
+        /* 열린 문 — 지나갈 수 있으니 안이 비어 보여야 한다 */
+        ctx.fillStyle = 'rgba(60,232,212,.10)';
+        ctx.fillRect(d.x + 3, d.y + 3, TILE - 6, TILE - 6);
+      } else {
+        /* 닫힌 문 — 벽처럼 막혀 보여야 한다 */
+        fillRR(ctx, d.x + 2, d.y + 2, TILE - 4, TILE - 4, 3, '#3a2050');
+        ctx.fillStyle = 'rgba(248,63,168,.35)';            // --pink
+        ctx.fillRect(d.x + 2, d.y + 2, TILE - 4, 3);
+      }
+    }
+  }
 
-    var w = 44, x = cx - w / 2, y = cy + 14;
-    fillRR(ctx, x - 1, y - 1, w + 2, 7, 3, 'rgba(10,7,26,.8)');
-    fillRR(ctx, x, y, w * frac, 5, 2, color);
+  /* ---------- 진행 표시 ----------
+     전원 도착이 이 게임의 전부다 — 몇 명이 이미 나갔고 몇 명이 남았는지가
+     항상 보여야 "저 사람 때문에 다들 기다린다"가 화면만 보고도 읽힌다. */
+  function drawProgress(ctx, state, who, pids) {
+    var done = 0;
+    for (var i = 0; i < pids.length; i++) if (state.players[pids[i]].done) done++;
+
+    var text = '도착 ' + done + ' / ' + pids.length;
+    ctx.font = '700 13px ui-monospace,Consolas,monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    var tw = ctx.measureText(text).width;
+
+    var pipR = 6, gap = 4;
+    var pipsW = pids.length * (pipR * 2 + gap) - gap;
+    var boxW = 16 + tw + 14 + pipsW + 10;
+    var boxH = 26, bx = 12, by = 10;
+
+    fillRR(ctx, bx, by, boxW, boxH, 8, 'rgba(10,7,26,.72)');
+    ctx.fillStyle = done === pids.length ? '#3ce8d4' : '#eaf6ff';
+    ctx.fillText(text, bx + 12, by + boxH / 2);
+
+    var px = bx + 12 + tw + 14;
+    var py = by + boxH / 2;
+    for (var k = 0; k < pids.length; k++) {
+      var p = state.players[pids[k]];
+      var w = (who && who[pids[k]]) || null;
+      var ci = w ? (w.char | 0) : 0;
+      var col = (global.Sprite.CHARS[ci] || global.Sprite.CHARS[0]).color;
+      ctx.beginPath();
+      ctx.arc(px + pipR, py, pipR, 0, Math.PI * 2);
+      if (p.done) { ctx.fillStyle = col; ctx.fill(); }
+      else { ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.stroke(); }
+      px += pipR * 2 + gap;
+    }
   }
 
   /* ---------- 매 프레임 ----------
-     state: 이미 보간까지 끝난 "지금 그리는 세계". 여기서 더 손대지 않는다.
+     state: Sim.tick 또는 Snap.unpack 이 만든, 이미 보간까지 끝난 세계.
+            door, players[].sup, players[].done 을 그대로 읽는다 — 여기서
+            다시 판정하면 호스트와 화면이 갈린다.
      who:   닉네임·캐릭터 번호 (rooms/<code>/who 사본)
-     me:    내 pid — 내 캐릭터만 발밑에 표시를 둔다 */
+     me:    내 pid — 내 캐릭터만 발밑에 고리를 둔다 */
   function drawActors(ctx, state, who, me, dt) {
     deps();
-    ctx.clearRect(0, 0, W.W, W.H);
+    ctx.clearRect(0, 0, L.W, L.H);
     if (!state) return;
 
-    var i, pid;
+    var lv = L.LIST[state.lv];
+    drawSwitches(ctx, lv, state.lv, !!state.door);
 
-    /* 기계 위의 물건과 진행 막대 */
-    for (i = 0; i < state.map.stations.length; i++) {
-      var s = state.map.stations[i];
-      var m = state.machines[s.id];
-      if (!m) continue;
-      var def = St.get(m.type);
-      if (m.item) global.Sprite.drawItem(ctx, s.cx, s.cy - 2, m.item, scale);
-      drawProgress(ctx, m, def, s.cx, s.cy);
-    }
+    var pids = Object.keys(state.players).sort();
 
-    /* 캐릭터 — y 가 큰 사람이 앞이다. 안 그러면 위쪽 사람이 아래쪽 사람 위에
-       겹쳐 그려져서 누가 앞에 선 건지 안 보인다. */
-    var pids = Object.keys(state.players).sort(function (a, b) {
+    /* 캐릭터 — y 가 큰 사람(더 아래, 화면 앞쪽)이 나중에 그려진다. 안 그러면
+       위에 올라선 사람이 받쳐 주는 사람 뒤로 가려 "누구를 밟고 있나"가
+       안 보인다. */
+    var order = pids.slice().sort(function (a, b) {
       return state.players[a].y - state.players[b].y;
     });
 
-    for (i = 0; i < pids.length; i++) {
-      pid = pids[i];
+    /* 밟히고 있는 사람의 이름표는 감춘다. 이름표는 항상 자기 머리 바로
+       위에 뜨는데, 누가 그 머리를 밟고 서면 밟은 사람의 발이 정확히 그
+       자리를 차지해서 이름표와 겹쳐 뭉갠다. sup===2(남을 밟고 있다)인
+       사람의 발밑 자리를 찾아 그 밑에 있는 사람 표시만 끈다 — 밟은 쪽
+       이름표는 그대로 보이니 "누가 위에 있는지"는 여전히 읽힌다. */
+    var buried = {};
+    for (var bi2 = 0; bi2 < order.length; bi2++) {
+      var rider = state.players[order[bi2]];
+      if (rider.sup !== 2) continue;
+      for (var bj = 0; bj < order.length; bj++) {
+        if (bi2 === bj) continue;
+        var base = state.players[order[bj]];
+        var overlapX = (rider.x + L.PW > base.x + 4) && (rider.x < base.x + L.PW - 4);
+        if (overlapX && Math.abs((rider.y + L.PH) - base.y) < 2) {
+          buried[order[bj]] = true;
+          break;
+        }
+      }
+    }
+
+    for (var i = 0; i < order.length; i++) {
+      var pid = order[i];
       var p = state.players[pid];
       var w = (who && who[pid]) || null;
       var ci = w ? (w.char | 0) : 0;
-      var gear = (w && w.gear) || null;
+      var cx = p.x + L.PW / 2, feetY = p.y + L.PH;
 
-      /* 걷는 위상: 화면상 얼마나 움직였는지로 만든다. 남의 tap/seq 는
-         스냅샷에 없어서(전송량 때문에 뺐다) 애니메이션의 근거로 못 쓴다. */
+      /* 걷는 위상: 화면상 얼마나 움직였는지로 만든다. 도착한 사람은 위상을
+         멈춰 둔다 — 출입구 안에서 다리가 계속 흔들리면 "아직 뭘 하고
+         있나" 처럼 보인다. */
       var wk = walk[pid];
-      if (!wk) { wk = walk[pid] = { x: p.x, y: p.y, ph: 0 }; }
+      if (!wk) wk = walk[pid] = { x: p.x, y: p.y, ph: 0 };
       var dx = p.x - wk.x, dy = p.y - wk.y;
       var moved = Math.sqrt(dx * dx + dy * dy);
       wk.x = p.x; wk.y = p.y;
-      wk.ph += moved * 0.30;
-      if (moved < 0.05) wk.ph = 0;                 // 서면 다리를 모은다
+      if (!p.done) {
+        wk.ph += moved * 0.35;
+        if (moved < 0.05) wk.ph = 0;
+      }
 
       if (pid === me) {
-        /* 내 캐릭터 발밑에만 고리를 둔다. 8명이 비슷하게 생긴 화면에서
-           "어느 게 나지"를 못 찾으면 아무것도 못 한다. */
+        /* 내 캐릭터 발밑에만 고리를 둔다. 8명이 쌓인 화면에서 "어느 게
+           나지"를 못 찾으면 아무것도 못 한다. */
         ctx.strokeStyle = 'rgba(60,232,212,.85)';
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.ellipse(p.x, p.y + 12, 14, 6, 0, 0, Math.PI * 2);
+        ctx.ellipse(cx, feetY, 14, 6, 0, 0, Math.PI * 2);
         ctx.stroke();
       }
 
-      global.Sprite.draw(ctx, p.x, p.y, p.dir, ci, gear, p.hold, scale, wk.ph);
+      /* 남의 머리 위에 서 있으면(sup===2) 발밑에 짧은 표시를 준다 —
+         "지금 발판이 사람"이라는 걸 알아야 그 발판이 움직이는 순간을
+         이해하고 대비한다. 도착 판정과 마찬가지로 sup 값을 그대로 읽는다. */
+      if (p.sup === 2) {
+        ctx.strokeStyle = 'rgba(255,255,255,.55)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(cx - 9, feetY - 1);
+        ctx.lineTo(cx + 9, feetY - 1);
+        ctx.stroke();
+      }
 
-      /* 이름표 */
+      global.Sprite.draw(ctx, p.x, p.y, p.face, ci, p.vx, p.vy, wk.ph);
+
+      /* 도착한 사람은 은은한 완료 표시를 얹는다 — 출입구 안에 서 있는
+         그림만으로는 배경 색과 헷갈릴 수 있다. */
+      if (p.done) {
+        ctx.fillStyle = 'rgba(60,232,212,.9)';
+        ctx.font = '700 11px ui-monospace,Consolas,monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillText('✓', cx, p.y - 14);
+      }
+
+      /* 이름표 — 밟히고 있으면 안 그린다(바로 위 주석 참고) */
       var nm = (w && w.name) || '';
-      if (nm) {
+      if (nm && !buried[pid]) {
         ctx.font = '700 10px ui-monospace,Consolas,monospace';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'bottom';
-        var ny = p.y - (p.hold ? 42 : 30);
+        var ny = p.y - 2;
         ctx.fillStyle = 'rgba(10,7,26,.75)';
         var tw = ctx.measureText(nm).width + 8;
-        fillRR(ctx, p.x - tw / 2, ny - 11, tw, 12, 3, 'rgba(10,7,26,.75)');
+        fillRR(ctx, cx - tw / 2, ny - 11, tw, 12, 3, 'rgba(10,7,26,.75)');
         ctx.fillStyle = (pid === me) ? '#3ce8d4' : '#eaf6ff';
-        ctx.fillText(nm, p.x, ny);
+        ctx.fillText(nm, cx, ny);
       }
     }
 
     /* 나간 사람의 위상 기록은 버린다 — 안 지우면 긴 판에서 계속 쌓인다 */
-    for (pid in walk) {
-      if (!Object.prototype.hasOwnProperty.call(walk, pid)) continue;
-      if (!state.players[pid]) delete walk[pid];
+    for (var k in walk) {
+      if (!Object.prototype.hasOwnProperty.call(walk, k)) continue;
+      if (!state.players[k]) delete walk[k];
     }
+
+    drawProgress(ctx, state, who, pids);
 
     if (dt) { /* dt 는 지금은 안 쓴다. 위상은 이동량으로만 만든다. */ }
   }
 
   function draw(floorCv, actorsCv, state, who, me, dt) {
+    deps();
     if (!state) return;
+
+    /* 판이 바뀌면 리사이즈가 없어도 바닥을 다시 그려야 한다 — 오버워크드는
+       판이 하나라 이 문제가 없었지만, 여기는 판이 3개다. */
+    if (state.lv !== lastLv) {
+      lastLv = state.lv;
+      floorDirty = true;
+    }
+
     if (floorDirty) {
-      drawFloorLayer(ctxOf(floorCv), state.map);
+      drawFloorLayer(ctxOf(floorCv), L.LIST[state.lv], state.lv);
       floorDirty = false;
     }
     drawActors(ctxOf(actorsCv), state, who, me, dt);
@@ -306,7 +407,6 @@
     layout: layout,
     draw: draw,
     dirty: function () { floorDirty = true; },
-    scale: function () { return scale; },
-    MACH: MACH
+    scale: function () { return scale; }
   };
 })(window);

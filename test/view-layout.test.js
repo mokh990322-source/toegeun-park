@@ -20,7 +20,7 @@ function fakeCanvas() {
 
 function setup(innerWidth, innerHeight, dpr) {
   const w = { innerWidth: innerWidth, innerHeight: innerHeight, devicePixelRatio: dpr || 1 };
-  load(['world', 'stations'], w);
+  load('levels', w);
   load('view', w);
   return w;
 }
