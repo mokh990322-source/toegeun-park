@@ -3,130 +3,114 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const { load } = require('../testlib/load');
 
-function all() { return load(['world', 'stations', 'sim', 'snap']); }
-
-function bench(w) {
-  const T = w.World.TILE;
-  return {
-    cols: 10, rows: 5,
-    grid: ('##########' + '#SS....SS#' + '#........#' + '#SS....SS#' + '##########').split(''),
-    spawns: [{ x: 5 * T, y: 2 * T }, { x: 4 * T, y: 2 * T }],
-    stations: [
-      { id: 'r', type: 'ref',    cx: 1 * T + T / 2, cy: 1 * T + T / 2 },
-      { id: 'm', type: 'model',  cx: 7 * T + T / 2, cy: 1 * T + T / 2 },
-      { id: 's', type: 'ship',   cx: 7 * T + T / 2, cy: 3 * T + T / 2 }
-    ]
-  };
-}
-
-test('ITEMS 에 모든 물건 상태가 있다', () => {
-  const I = all().Snap.ITEMS;
-  for (const s of ['ref', 'high', 'low', 'uv', 'tex', 'rig', 'done', 'burnt']) {
-    assert.ok(I.indexOf(s) >= 0, s + ' 가 빠졌다');
-  }
-  assert.strictEqual(new Set(I).size, I.length, '중복이 있다');
-});
+function W() { return load(['levels', 'sim', 'snap']); }
+const DT = 1 / 60;
+function idle(pids) { const o = {}; pids.forEach(p => { o[p] = { x: 0, jseq: 0 }; }); return o; }
 
 test('pack 은 좌표를 정수로 만든다', () => {
-  const w = all(), S = w.Sim, P = w.Snap;
-  let st = S.create(bench(w), ['a']);
-  st.players.a.x = 123.456;
-  st.players.a.y = 78.912;
-  const k = P.pack(st);
+  const { Sim: S, Snap: N } = W();
+  const st = S.create(0, ['a']);
+  st.players.a.x = 123.456; st.players.a.y = 78.912;
+  const k = N.pack(st);
   assert.strictEqual(k.p.a[0], 123);
   assert.strictEqual(k.p.a[1], 79);
 });
 
-test('pack 은 빈손을 -1 로 적는다', () => {
-  const w = all(), P = w.Snap;
-  let st = w.Sim.create(bench(w), ['a']);
-  assert.strictEqual(P.pack(st).p.a[3], -1);
+test('pack 은 sup 을 싣는다 — 이게 없으면 예측 규칙이 성립 안 한다', () => {
+  const { Sim: S, Snap: N } = W();
+  const st = S.create(0, ['a']);
+  [0, 1, 2].forEach(function (v) {
+    st.players.a.sup = v;
+    assert.strictEqual(N.pack(st).p.a[5], v, 'sup ' + v + ' 이 안 실렸다');
+  });
 });
 
-test('pack 은 들고 있는 물건을 색인으로 적는다', () => {
-  const w = all(), P = w.Snap;
-  let st = w.Sim.create(bench(w), ['a']);
-  st.players.a.hold = 'high';
-  assert.strictEqual(P.pack(st).p.a[3], P.ITEMS.indexOf('high'));
+test('pack 은 jseq 를 싣지 않는다 (입력 계열은 전송 상태가 아니다)', () => {
+  const { Sim: S, Snap: N } = W();
+  const st = S.create(0, ['a']);
+  st.players.a.jseq = 777;
+  const s = JSON.stringify(N.pack(st));
+  assert.ok(s.indexOf('777') < 0, 'jseq 가 새어 나갔다: ' + s);
+  assert.ok(s.indexOf('jseq') < 0);
 });
 
 test('pack 은 t 를 정수 틱으로 적는다', () => {
-  const w = all(), P = w.Snap;
-  let st = w.Sim.create(bench(w), ['a']);
-  st.t = 12.7;
-  const k = P.pack(st);
-  assert.strictEqual(typeof k.t, 'number');
-  assert.strictEqual(k.t, Math.round(k.t), 't 는 정수여야 한다');
+  const { Sim: S, Snap: N } = W();
+  const st = S.create(0, ['a']);
+  st.t = 12.77;
+  const k = N.pack(st);
+  assert.strictEqual(k.t, Math.round(k.t));
 });
 
 test('pack → unpack 이 뜻을 지킨다', () => {
-  const w = all(), S = w.Sim, P = w.Snap;
-  const map = bench(w);
-  let st = S.create(map, ['a', 'b']);
-  st.players.a.x = 200; st.players.a.y = 100; st.players.a.dir = 2; st.players.a.hold = 'ref';
-  st.players.b.x = 300; st.players.b.y = 150; st.players.b.dir = 1;
-  st.machines.m = { id: 'm', type: 'model', item: 'ref', prog: 3 };
-  st.done = 2;
+  const { Sim: S, Snap: N } = W();
+  const st = S.create(1, ['a', 'b']);
+  st.players.a.x = 200; st.players.a.y = 100; st.players.a.vx = -240; st.players.a.vy = 55;
+  st.players.a.face = -1; st.players.a.sup = 2; st.players.a.done = true;
+  st.door = true; st.cleared = false; st.t = 3.4;
 
-  const back = P.unpack(P.pack(st), map);
+  const back = N.unpack(N.pack(st), st.spawnIdx);
+  assert.strictEqual(back.lv, 1);
   assert.strictEqual(back.players.a.x, 200);
-  assert.strictEqual(back.players.a.dir, 2);
-  assert.strictEqual(back.players.a.hold, 'ref');
-  assert.strictEqual(back.players.b.hold, null);
-  assert.strictEqual(back.machines.m.item, 'ref');
-  assert.strictEqual(back.machines.m.prog, 3);
-  assert.strictEqual(back.done, 2);
-  assert.strictEqual(back.map, map);
-});
-
-test('unpack 은 빈 기계를 null 로 되돌린다', () => {
-  const w = all(), P = w.Snap;
-  const map = bench(w);
-  const st = w.Sim.create(map, ['a']);
-  const back = P.unpack(P.pack(st), map);
-  assert.strictEqual(back.machines.m.item, null);
-});
-
-test('unpack 은 맵에 없는 기계를 무시한다', () => {
-  const w = all(), P = w.Snap;
-  const map = bench(w);
-  const k = P.pack(w.Sim.create(map, ['a']));
-  k.m.유령 = [0, 0];
-  const back = P.unpack(k, map);
-  assert.strictEqual(back.machines.유령, undefined, '맵에 없는 기계가 생기면 안 된다');
+  assert.strictEqual(back.players.a.y, 100);
+  assert.strictEqual(back.players.a.vx, -240);
+  assert.strictEqual(back.players.a.vy, 55);
+  assert.strictEqual(back.players.a.face, -1);
+  assert.strictEqual(back.players.a.sup, 2);
+  assert.strictEqual(back.players.a.done, true);
+  assert.strictEqual(back.door, true);
+  assert.strictEqual(back.cleared, false);
+  assert.ok(Math.abs(back.t - 3.4) < 0.06);
 });
 
 test('unpack 은 망가진 꾸러미에도 안 죽는다', () => {
-  const w = all(), P = w.Snap;
-  const map = bench(w);
-  for (const bad of [null, undefined, {}, { t: 1 }, { p: null, m: null }, 'x', 5]) {
-    const back = P.unpack(bad, map);
-    assert.ok(back && back.players && back.machines, '꾸러미: ' + JSON.stringify(bad));
-  }
+  const { Snap: N } = W();
+  [null, undefined, 0, '', [], 5, { p: 'x' }, { p: { a: 1 } }, { p: { a: [] } },
+   { p: { a: [1, 2] } }, { t: NaN, p: null }].forEach(function (bad) {
+    const out = N.unpack(bad, {});
+    assert.ok(out && out.players && typeof out.lv === 'number', '꾸러미: ' + JSON.stringify(bad));
+  });
 });
 
-test('prog 는 소수 둘째 자리까지만 실린다', () => {
-  const w = all(), P = w.Snap;
-  const map = bench(w);
-  let st = w.Sim.create(map, ['a']);
-  st.machines.m = { id: 'm', type: 'model', item: 'ref', prog: 0.123456789 };
-  const k = P.pack(st);
-  assert.strictEqual(k.m.m[1], 0.12);
+test('unpack 은 py 를 y 로 맞춰 준다 (첫 틱에 헛디디지 않게)', () => {
+  const { Sim: S, Snap: N } = W();
+  const st = S.create(0, ['a']);
+  st.players.a.y = 300;
+  const back = N.unpack(N.pack(st), {});
+  assert.strictEqual(back.players.a.py, back.players.a.y,
+    'py 가 어긋나면 이어받은 첫 틱에 남의 머리를 잘못 밟는다');
+});
+
+test('pack 은 원본을 고치지 않는다', () => {
+  const { Sim: S, Snap: N } = W();
+  const st = S.create(0, ['a']);
+  st.players.a.x = 111.7;
+  N.pack(st);
+  assert.strictEqual(st.players.a.x, 111.7);
+});
+
+test('이어받아 tick 을 돌려도 터지지 않는다', () => {
+  const { Sim: S, Snap: N } = W();
+  let st = S.create(1, ['a', 'b']);
+  for (let i = 0; i < 60; i++) st = S.tick(st, idle(['a', 'b']), DT);
+  let back = N.unpack(N.pack(st), st.spawnIdx);
+  back = S.adopt(back, idle(['a', 'b']));
+  for (let i = 0; i < 60; i++) back = S.tick(back, idle(['a', 'b']), DT);
+  assert.ok(back.players.a && back.players.b);
+  assert.ok(isFinite(back.players.a.x) && isFinite(back.players.a.y));
 });
 
 test('8명 스냅샷이 예산 안에 든다', () => {
-  const w = all(), S = w.Sim, P = w.Snap;
-  const map = w.World.STAGE1;
-  const pids = ['p1','p2','p3','p4','p5','p6','p7','p8'];
-  let st = S.create(map, pids);
-  for (const id of pids) {
-    st.players[id].x = 1234.5678;
-    st.players[id].y = 678.1234;
-    st.players[id].hold = 'high';
-  }
-  for (const id in st.machines) st.machines[id] = { id, type: st.machines[id].type, item: 'ref', prog: 0.55 };
-
-  const n = P.bytes(P.pack(st));
+  const { Sim: S, Snap: N } = W();
+  const pids = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8'];
+  const st = S.create(2, pids);
+  pids.forEach(function (p) {
+    st.players[p].x = 1234; st.players[p].y = -678;
+    st.players[p].vx = -240; st.players[p].vy = 1200;
+    st.players[p].face = -1; st.players[p].sup = 2; st.players[p].done = true;
+  });
+  st.door = true; st.t = 99999;
+  const n = N.bytes(N.pack(st));
   console.log('   8명 스냅샷 크기:', n, 'bytes');
-  assert.ok(n < 900, '스냅샷이 900바이트를 넘으면 예산(13MB/판)을 넘긴다: ' + n);
+  assert.ok(n < 700, '스냅샷이 700바이트를 넘으면 예산을 다시 봐야 한다: ' + n);
 });

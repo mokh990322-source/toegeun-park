@@ -1,314 +1,265 @@
 /* ============================================================
-   오버워크드 — 시뮬레이션 (호스트 전용, 유일한 권위)
+   퇴근파크 — 시뮬레이션 (호스트 전용, 유일한 권위)
 
-   호스트 브라우저만 이걸 돌린다. 나머지는 결과를 받아 그리기만 한다.
-   "이 물건을 누가 들었나"에 답이 하나뿐이어야 오버쿡드류가 성립한다.
+   호스트 브라우저만 이걸 돌린다. 나머지는 결과를 받아 그린다.
+   네트워크도 캔버스도 DOM 도 모른다 — 브라우저 없이 Node 로 전부 검증한다.
 
-   이 파일은 네트워크도 캔버스도 DOM 도 모른다. 순수 함수 덩어리라
-   브라우저 없이 Node 로 전부 검증한다 — 8명 붙은 뒤에 규칙 버그를 찾으면
-   누구 화면이 맞는지부터 다퉈야 한다.
+   ── sup 이 왜 있는가 ────────────────────────────────────
+   플레이어마다 "무엇에 받쳐져 있는지"를 기록한다.
+     0 공중   1 타일(땅·벽)   2 남의 머리
+   클라이언트는 sup === 2 일 때 예측을 끈다. 내 화면 속 남은 150ms 과거라,
+   그 사람을 발판 삼아 예측하면 매번 어긋나 "분명 밟았는데 떨어졌다"가 된다.
+   이 값을 스냅샷에 실어야 그 규칙이 성립한다.
 
-   ── 액션이 하나뿐인 이유 ────────────────────────────────
-   집기·놓기·작업을 키 하나로 몰았다. 키가 셋이면 처음 하는 사람이 뭘 눌러야
-   할지 매번 생각해야 하는데, 이 게임에서 생각할 것은 "지금 뭘 해야 하나"지
-   "무슨 키를 눌러야 하나"가 아니다. 상황이 곧 동작을 정한다.
+   ── 코요테 타임과 점프 버퍼 ─────────────────────────────
+   발판을 벗어나고도 잠깐은 점프가 되고(코요테), 착지 직전에 누른 점프는
+   기억했다가 닿는 순간 쓴다(버퍼). 조작감을 좋게 하는 표준 기법인데,
+   지연을 가리는 데도 그대로 쓰인다 — 한 프레임 차이로 점프가 씹히면
+   그게 지연 탓인지 내 탓인지 알 수가 없다.
 
-   ── 손이 비어야만 두드릴 수 있는 이유 ───────────────────
-   물건을 든 채로 두드릴 수 있으면 한 사람이 레퍼런스를 들고 모델링대 앞에
-   서서 혼자 다 끝낸다. 손을 비워야만 두드릴 수 있어야 "놓고 → 두드리고 →
-   집어서 → 옮긴다"가 되고, 그래야 여럿이 나눠 맡을 이유가 생긴다.
+   ── 죽음이 없는 이유 ────────────────────────────────────
+   떨어지면 그 사람만 시작점에서 되살아난다. 한 명이 실수해서 전원이
+   처음부터 다시 하면 사내에서 못 한다.
    ============================================================ */
 (function (global) {
   'use strict';
 
-  var SPEED = 210;        // 초당 디자인 픽셀. 1280 폭을 6초에 가로지른다.
-  var REACH = 46;         // 기계에 손이 닿는 거리. 타일(40)보다 조금 커야 답답하지 않다.
-  var MAX_ACTS = 8;       // 한 틱에 처리할 액션 상한 (네트워크가 밀렸을 때 폭주 방지)
+  var SPEED = 240;          // 초당 가로 이동 (디자인 픽셀)
+  var GRAVITY = 2000;
+  var JUMP_V = 760;         // 도달 높이 = 760^2/(2*2000) = 144px = 3.6칸
+  var MAX_FALL = 1200;
+  var COYOTE = 0.12;        // 발판을 벗어난 뒤 점프가 먹히는 시간
+  var JUMP_BUF = 0.12;      // 착지 전에 누른 점프를 기억하는 시간
+  var HEAD_BAND = 14;       // 발바닥이 이만큼 안이면 남의 머리에 올라선다
+  var PUSH = 0.5;           // 가로로 겹쳤을 때 서로 밀어내는 비율
+  var MAX_JUMPS = 4;        // 한 틱에 처리할 점프 상한 (밀린 입력 폭주 방지)
 
-  var W = null, St = null;
-  function deps() {
-    if (!W) W = global.World;
-    if (!St) St = global.Stations;
-  }
+  var L = null;
+  function deps() { if (!L) L = global.Levels; }
 
   function copyPlayers(src) {
     var o = {}, k;
     for (k in src) if (Object.prototype.hasOwnProperty.call(src, k)) {
       var p = src[k];
-      o[k] = { x: p.x, y: p.y, dir: p.dir, hold: p.hold, tap: p.tap, seq: p.seq };
+      o[k] = { x: p.x, y: p.y, py: p.py, vx: p.vx, vy: p.vy, face: p.face, sup: p.sup,
+               coy: p.coy, buf: p.buf, jseq: p.jseq, done: p.done };
     }
     return o;
   }
 
-  function copyMachines(src) {
-    var o = {}, k;
-    for (k in src) if (Object.prototype.hasOwnProperty.call(src, k)) {
-      var m = src[k];
-      o[k] = { id: m.id, type: m.type, item: m.item, prog: m.prog };
-    }
-    return o;
+  function spawnOf(lv, i) {
+    var s = lv.spawns[i % lv.spawns.length];
+    return { x: s.x, y: s.y };
   }
 
-  function create(map, pids) {
+  function newPlayer(lv, i) {
+    var s = spawnOf(lv, i);
+    return { x: s.x, y: s.y, py: s.y, vx: 0, vy: 0, face: 1, sup: 0,
+             coy: 0, buf: 0, jseq: 0, done: false };
+  }
+
+  function create(lvIndex, pids) {
     deps();
-    var st = {
-      t: 0,
-      map: map,
-      players: {},
-      machines: {},
-      done: 0,
-      goal: St.STAGE1_GOAL
-    };
-    for (var i = 0; i < map.stations.length; i++) {
-      var s = map.stations[i];
-      st.machines[s.id] = { id: s.id, type: s.type, item: null, prog: 0 };
-    }
-    for (var j = 0; j < (pids || []).length; j++) {
-      st = join(st, pids[j], j);
+    var st = { t: 0, lv: lvIndex | 0, players: {}, door: false, cleared: false, spawnIdx: {} };
+    var list = pids || [];
+    for (var i = 0; i < list.length; i++) {
+      st.players[list[i]] = newPlayer(L.LIST[st.lv], i);
+      st.spawnIdx[list[i]] = i;
     }
     return st;
   }
 
   function join(state, pid, spawnIndex) {
     deps();
-    if (state.players[pid]) return state;          // 이미 있으면 들고 있던 걸 지키지 않는다
+    if (state.players[pid]) return state;
     var players = copyPlayers(state.players);
-    var sp = state.map.spawns[spawnIndex % state.map.spawns.length] || { x: 100, y: 100 };
-    players[pid] = { x: sp.x, y: sp.y, dir: 0, hold: null, tap: 0, seq: 0 };
-    return {
-      /* machines 도 복사한다 — tick 은 이미 그렇게 하는데 join/leave 만 참조로
-         넘기면 "이 함수들은 원본을 고치지 않는다"는 계약이 셋 중 둘에서만
-         참이 된다. 지금 당장은 이 함수들이 machines 를 안 건드리니 티가
-         안 나지만, 나중에 누가 next.machines 를 그 자리에서 고치는 코드를
-         하나라도 여기 추가하면 state.machines 까지 같이 망가진다. */
-      t: state.t, map: state.map, players: players,
-      machines: copyMachines(state.machines), done: state.done, goal: state.goal
-    };
+    var idx = {}, k;
+    for (k in state.spawnIdx) if (Object.prototype.hasOwnProperty.call(state.spawnIdx, k)) idx[k] = state.spawnIdx[k];
+    idx[pid] = spawnIndex | 0;
+    players[pid] = newPlayer(L.LIST[state.lv], spawnIndex | 0);
+    return { t: state.t, lv: state.lv, players: players, door: state.door,
+             cleared: state.cleared, spawnIdx: idx };
   }
 
   function leave(state, pid) {
     var players = copyPlayers(state.players);
-    /* 들고 있던 물건은 같이 사라진다. 바닥에 떨구게 하면 "바닥에 놓인 물건"이라는
-       개념을 하나 더 만들어야 하는데, 나간 사람 때문에 규칙이 늘 이유가 없다. */
+    var idx = {}, k;
+    for (k in state.spawnIdx) if (Object.prototype.hasOwnProperty.call(state.spawnIdx, k) && k !== pid) idx[k] = state.spawnIdx[k];
     delete players[pid];
-    return {
-      t: state.t, map: state.map, players: players,
-      machines: copyMachines(state.machines), done: state.done, goal: state.goal
-    };
+    return { t: state.t, lv: state.lv, players: players, door: state.door,
+             cleared: state.cleared, spawnIdx: idx };
   }
 
-  /* 호스트 승계 직후 딱 한 번 호출한다.
-     Snap 은 seq 를 담지 않는다(전송량 때문에 의도적으로 뺐다 — snap.js 참고).
-     그래서 스냅샷을 이어받은 새 호스트의 players[].seq 는 전부 0 이다. 그대로
-     tick 을 돌리면 각 플레이어가 매치 내내 보낸 입력 전체를 "새 액션"으로
-     오인해 그 자리에서 재생해 버린다 — 진행 중이던 작업이 순간 완성되고,
-     들고 있던 물건이 옆 기계로 빨려 들어가는 식의 치명적 버그(C1)다.
-     그래서 승계 시점에 각 플레이어의 seq 를 "그 사람의 현재 입력이 말하는
-     값"으로 맞춰 둔다 — 입력이 아직 없으면 0. 이러면 다음 tick 에서
-     want - have 가 0이 되어 아무것도 재생되지 않고, 그 이후의 진짜 새 입력만
-     정상적으로 처리된다. */
+  /* 승계한 호스트가 한 번 부른다. 스냅샷은 전송량 때문에 jseq 를 안 담아서,
+     이어받은 판의 jseq 는 전부 0 이다. 그대로 tick 을 돌리면 각자가 매치 내내
+     누른 점프 전체를 "새 입력"으로 오인해 그 자리에서 재생한다. */
   function adopt(state, inputs) {
-    var players = copyPlayers(state.players), pid;
-    for (pid in players) {
-      if (!Object.prototype.hasOwnProperty.call(players, pid)) continue;
-      var inp = (inputs && inputs[pid]) || null;
-      players[pid].seq = inp ? (inp.seq || 0) : 0;
+    var players = copyPlayers(state.players), k;
+    for (k in players) if (Object.prototype.hasOwnProperty.call(players, k)) {
+      players[k].jseq = (inputs && inputs[k] && inputs[k].jseq) || 0;
     }
-    return {
-      t: state.t, map: state.map, players: players,
-      machines: copyMachines(state.machines), done: state.done, goal: state.goal
-    };
+    return { t: state.t, lv: state.lv, players: players, door: state.door,
+             cleared: state.cleared, spawnIdx: state.spawnIdx };
   }
 
-  /* 이동이 끝난 뒤 겹친 플레이어 쌍을 밀어 떼어 놓는다.
-     디자인 스펙 4.3 — "통로가 좁다, 서로 길을 막는다"가 이 게임 웃음의
-     절반이다. 다들 같은 칸에 설 수 있으면 8명이 기계 하나에 몰려도
-     아무 문제가 안 생기고, 그러면 애초에 8명일 이유가 없다.
-
-     ── 왜 절반씩 미는가 ──────────────────────────────────
-     한쪽만 밀면 pid 정렬에서 먼저 오는 사람이 항상 상대를 떠미는 쪽이
-     된다. 매 틱 그 순서가 똑같으니 특정 플레이어가 구조적으로 유리해져
-     "밀리는 사람"이 고정된다. 절반씩 나눠 밀면 둘 다 똑같이 움직이고
-     결과가 어느 쪽 pid 가 더 빠른지에 좌우되지 않는다.
-
-     ── 왜 3번만 도는가 ──────────────────────────────────
-     8명이 구석에 처박히면 한 번의 쌍별 이동으로는 다 안 풀린다(민 자리에
-     또 다른 사람이 있을 수 있으니까). 그렇다고 수렴할 때까지 돌면, 벽과
-     사람 사이에 낀 경우 "밀었다 막혔다"를 반복하며 끝나지 않을 수 있다.
-     3번이면 화면상 충분히 벌어지고, 어차피 다음 틱에도 또 돌기 때문에
-     한 틱 안에서 완벽히 풀 필요가 없다.
-
-     ── 왜 정렬된 pid 순서인가 ────────────────────────────
-     object 의 for-in 순서는 키를 어떤 순서로 넣었는지에 따라 달라질 수
-     있다(숫자형 키는 특히). 순서가 곧 "누가 누구를 미는가"를 정하는
-     이 로직에서, 순서가 안 정해지면 같은 상황도 리플레이마다 다르게
-     풀려 호스트마다 화면이 어긋난다. 매번 sort() 로 고정한다.
-
-     ── 왜 벽으로 미는 걸 거부하는가 ──────────────────────
-     겹친 두 사람 중 하나가 벽에 붙어 있으면, 미는 방향이 벽 쪽을 향할
-     수 있다. 그 이동을 그대로 허용하면 반지름 판정을 건너뛰고 벽 안으로
-     들어가 버린다(터널링) — 사람끼리 잠깐 겹쳐 보이는 것보다 훨씬 나쁜
-     버그다. 목적지가 blocked 면 그 사람은 그 자리에 머물고, 상대만
-     (막히지 않았다면) 움직인다. */
-  function pushApart(map, players, pids) {
-    var PASSES = 3;
-    var minDist = 2 * W.R;
-
-    for (var pass = 0; pass < PASSES; pass++) {
-      for (var i = 0; i < pids.length; i++) {
-        var a = players[pids[i]];
-        if (!a) continue;
-        for (var j = i + 1; j < pids.length; j++) {
-          var b = players[pids[j]];
-          if (!b) continue;
-
-          var dx = b.x - a.x, dy = b.y - a.y;
-          var dist = Math.sqrt(dx * dx + dy * dy);
-          if (dist >= minDist) continue;
-
-          var nx, ny;
-          if (dist < 1e-6) {
-            /* 완전히 같은 자리라 밀 방향이 안 나온다. 여기서 무작위로
-               고르면 같은 상황이 재생마다 다르게 풀려 리플레이가 어긋난다.
-               pids 는 이미 정렬돼 있으므로(i < j) 그 순서 자체를 고정된
-               방향으로 삼는다 — 항상 뒤 pid 를 +x 로 보낸다. */
-            nx = 1; ny = 0;
-          } else {
-            nx = dx / dist; ny = dy / dist;
-          }
-
-          var half = (minDist - dist) / 2;
-          var ax = a.x - nx * half, ay = a.y - ny * half;
-          var bx = b.x + nx * half, by = b.y + ny * half;
-
-          if (!W.blocked(map, ax, ay)) { a.x = ax; a.y = ay; }
-          if (!W.blocked(map, bx, by)) { b.x = bx; b.y = by; }
-        }
-      }
-    }
-  }
-
-  /* 액션 한 번. state 를 그 자리에서 고친다 — tick 안에서 이미 복사한 뒤라 안전하다. */
-  function doAction(state, pid) {
-    deps();
-    var p = state.players[pid];
-    if (!p) return;
-
-    var s = W.nearest(state.map, p.x, p.y, REACH);
-    if (!s) return;
-    var m = state.machines[s.id];
-    if (!m) return;
-    var d = St.get(m.type);
-    if (!d) return;
-
-    /* 1) 선반에서 새로 든다 */
-    if (p.hold === null && d.mode === 'source') { p.hold = d.gives; return; }
-
-    /* 2) 두드린다 — 집기보다 반드시 앞에 와야 한다.
-       집기가 먼저면 모델링대에 레퍼런스를 놓고 두드리려 할 때마다 도로 집어
-       들게 되어 작업이 영원히 안 된다. canAccept 로 "아직 처리할 수 있는
-       물건"일 때만 걸리게 하면, 다 된 하이폴리는 자연히 아래 집기로 넘어간다. */
-    if (p.hold === null && d.mode === 'tap' &&
-        m.item !== null && St.canAccept(m.type, m.item)) {
-      m.prog += 1;
-      if (m.prog >= d.work) { m.item = d.gives; m.prog = 0; }
-      return;
-    }
-
-    /* 3) 기계 위의 물건을 집는다 */
-    if (p.hold === null && m.item !== null) {
-      p.hold = m.item;
-      m.item = null;
-      m.prog = 0;
-      return;
-    }
-
-    /* 4) 납품대·폐기통에 넣는다 */
-    if (p.hold !== null && d.mode === 'sink') {
-      if (m.type === 'ship' && p.hold === state.goal.need) state.done += 1;
-      p.hold = null;
-      return;
-    }
-
-    /* 5) 빈 기계에 놓는다 */
-    if (p.hold !== null && m.item === null && St.canAccept(m.type, p.hold)) {
-      m.item = p.hold;
-      m.prog = 0;
-      p.hold = null;
-      return;
-    }
+  /* 낮은 사람(y 가 큰 쪽)부터 푼다. 받쳐 주는 쪽이 먼저 자리를 잡아야
+     그 위에 선 사람이 제자리를 찾는다. y 가 같으면 pid 로 갈라 모두가
+     같은 답을 얻게 한다 — 사람마다 다른 순서면 화면이 갈린다. */
+  function orderByHeight(players) {
+    var keys = Object.keys(players).sort();
+    keys.sort(function (a, b) {
+      var d = players[b].y - players[a].y;
+      if (d !== 0) return d;
+      return a < b ? -1 : 1;
+    });
+    return keys;
   }
 
   function tick(state, inputs, dt) {
     deps();
+    var lv = L.LIST[state.lv];
     var players = copyPlayers(state.players);
-    var machines = copyMachines(state.machines);
-    var next = {
-      t: state.t + dt, map: state.map, players: players,
-      machines: machines, done: state.done, goal: state.goal
-    };
+    var keys = Object.keys(players).sort();
+    var i, k, pid, p, inp;
 
-    var pid;
-
-    /* 이동 */
-    for (pid in players) {
-      if (!Object.prototype.hasOwnProperty.call(players, pid)) continue;
-      var p = players[pid];
-      var inp = (inputs && inputs[pid]) || null;
+    /* ---- 1. 입력·중력·타일 충돌 ---- */
+    for (i = 0; i < keys.length; i++) {
+      pid = keys[i]; p = players[pid];
+      inp = (inputs && inputs[pid]) || null;
       var ix = inp ? (inp.x || 0) : 0;
-      var iy = inp ? (inp.y || 0) : 0;
 
-      if (ix || iy) {
-        /* 대각선이 더 빠르면 다들 대각선으로만 다닌다. 길이를 1 로 맞춘다. */
-        var len = Math.sqrt(ix * ix + iy * iy);
-        var vx = (ix / len) * SPEED * dt;
-        var vy = (iy / len) * SPEED * dt;
-        var np = W.move(state.map, p.x, p.y, vx, vy);
-        p.x = np.x; p.y = np.y;
-        /* 보는 쪽은 더 크게 움직인 축으로 정한다 */
-        if (Math.abs(ix) > Math.abs(iy)) p.dir = ix > 0 ? 2 : 1;
-        else p.dir = iy > 0 ? 0 : 3;
+      /* 점프 입력은 누른 횟수로 온다. 한 번만 처리하면 패킷이 밀렸을 때
+         점프가 씹힌다. 대신 한 틱 상한을 둬서 폭주는 막는다. */
+      var want = inp ? (inp.jseq || 0) : p.jseq;
+      var n = want - p.jseq;
+      if (n < 0) n = 0;
+      if (n > MAX_JUMPS) n = MAX_JUMPS;
+      if (n > 0) p.buf = JUMP_BUF;
+      p.jseq = p.jseq + n;
+
+      p.vx = ix * SPEED;
+      if (ix) p.face = ix > 0 ? 1 : -1;
+
+      p.vy += GRAVITY * dt;
+      if (p.vy > MAX_FALL) p.vy = MAX_FALL;
+
+      /* 코요테: 받쳐져 있으면 채우고, 아니면 줄인다 */
+      if (p.sup !== 0) p.coy = COYOTE;
+      else p.coy = Math.max(0, p.coy - dt);
+      p.buf = Math.max(0, p.buf - dt);
+
+      if (p.buf > 0 && p.coy > 0) {
+        p.vy = -JUMP_V;
+        p.buf = 0; p.coy = 0;
+        p.sup = 0;
+      }
+
+      var rx = L.moveX(lv, p.x, p.y, p.vx * dt, state.door);
+      p.x = rx.x;
+      if (rx.hit) p.vx = 0;
+
+      p.py = p.y;                       // 이번 틱 세로 이동 전 위치 (머리 밟기 판정용)
+      var ry = L.moveY(lv, p.x, p.y, p.vy * dt, state.door);
+      var wasFalling = p.vy > 0;
+      p.y = ry.y;
+      p.sup = 0;
+      if (ry.hit) {
+        if (wasFalling) p.sup = 1;        // 땅에 닿았다
+        p.vy = 0;
       }
     }
 
-    /* 겹침 풀기 — 반드시 이동 다음, 액션 앞이다. 액션은 지금 위치로 사거리를
-       재기 때문에, 밀려난 뒤의 자리로 판정해야 "밀렸더니 갑자기 기계에
-       안 닿는다" 같은 어긋남이 안 생긴다. */
-    pushApart(state.map, players, Object.keys(players).sort());
-
-    /* 액션 — seq 가 늘어난 만큼 처리한다.
-       한 번만 처리하면 네트워크가 밀렸을 때 연타가 씹힌다. */
-    for (pid in players) {
-      if (!Object.prototype.hasOwnProperty.call(players, pid)) continue;
-      var inp2 = (inputs && inputs[pid]) || null;
-      if (!inp2) continue;
-      var want = inp2.seq || 0;
-      var have = players[pid].seq || 0;
-      var n = want - have;
-      if (n <= 0) { players[pid].seq = want; continue; }   // 되감기(재입장 등)도 맞춰 준다
-      if (n > MAX_ACTS) n = MAX_ACTS;
-      for (var k = 0; k < n; k++) doAction(next, pid);
-      players[pid].seq = have + n;
-      players[pid].tap = next.t;                            // 그리는 쪽이 "방금 두드렸다"를 안다
+    /* ---- 2. 남의 머리 위에 올라서기 ---- */
+    var order = orderByHeight(players);
+    for (i = 0; i < order.length; i++) {
+      p = players[order[i]];
+      if (p.vy < 0) continue;                       // 올라가는 중이면 안 얹힌다
+      for (var j = 0; j < order.length; j++) {
+        if (i === j) continue;
+        var q = players[order[j]];
+        if (q === p) continue;
+        var overlapX = (p.x + L.PW > q.x + 4) && (p.x < q.x + L.PW - 4);
+        if (!overlapX) continue;
+        var feet = p.y + L.PH, head = q.y;
+        /* 띠로 재면 안 된다. 낙하 최고속도(1200)면 한 프레임에 20px 를 가는데
+           띠가 그보다 좁으면 남의 머리를 그냥 뚫고 지나간다.
+           "직전에는 머리 위에 있었고 지금은 아래에 있다"로 본다 — 속도와 무관하다. */
+        var prevFeet = p.py + L.PH;
+        if (prevFeet <= head + HEAD_BAND && feet >= head) {
+          p.y = head - L.PH;
+          p.vy = 0;
+          p.sup = 2;                                 // 남을 밟고 있다
+          break;
+        }
+      }
     }
 
-    /* 대기형 기계 굴리기 */
-    for (var id in machines) {
-      if (!Object.prototype.hasOwnProperty.call(machines, id)) continue;
-      machines[id] = St.step(machines[id], dt);
+    /* ---- 3. 가로로 겹치면 서로 밀어낸다 (같은 높이일 때만) ---- */
+    for (i = 0; i < keys.length; i++) {
+      for (var m = i + 1; m < keys.length; m++) {
+        var a = players[keys[i]], b = players[keys[m]];
+        var dy = Math.abs((a.y + L.PH / 2) - (b.y + L.PH / 2));
+        if (dy > L.PH * 0.7) continue;               // 위아래로 쌓인 건 안 민다
+        var ax = a.x + L.PW / 2, bx = b.x + L.PW / 2;
+        var gap = Math.abs(ax - bx);
+        if (gap >= L.PW) continue;
+        var pushAmt = (L.PW - gap) * PUSH;
+        var dir = ax < bx ? -1 : 1;
+        var na = L.moveX(lv, a.x, a.y, dir * pushAmt, state.door);
+        var nb = L.moveX(lv, b.x, b.y, -dir * pushAmt, state.door);
+        a.x = na.x; b.x = nb.x;
+      }
     }
 
-    return next;
+    /* ---- 4. 버튼 → 문 ---- */
+    var door = false;
+    for (i = 0; i < keys.length; i++) {
+      p = players[keys[i]];
+      if (p.sup === 1 && L.onButton(lv, p.x, p.y)) { door = true; break; }
+    }
+
+    /* ---- 5. 떨어진 사람은 자기 시작점으로 ---- */
+    for (i = 0; i < keys.length; i++) {
+      pid = keys[i]; p = players[pid];
+      if (p.y > L.H + 80) {
+        var s = spawnOf(lv, state.spawnIdx[pid] || 0);
+        p.x = s.x; p.y = s.y; p.vx = 0; p.vy = 0; p.sup = 0; p.coy = 0; p.buf = 0;
+      }
+    }
+
+    /* ---- 6. 전원이 출입구에 있으면 판 끝 ---- */
+    var all = keys.length > 0, anyDone = 0;
+    for (i = 0; i < keys.length; i++) {
+      p = players[keys[i]];
+      p.done = L.inGoal(lv, p.x, p.y);
+      if (p.done) anyDone++; else all = false;
+    }
+
+    return { t: state.t + dt, lv: state.lv, players: players,
+             door: door, cleared: all, spawnIdx: state.spawnIdx };
+  }
+
+  /* 다음 판으로. 마지막 판이면 그대로 둔다. */
+  function nextLevel(state) {
+    deps();
+    if (state.lv + 1 >= L.LIST.length) return state;
+    var pids = Object.keys(state.players).sort();
+    var st = create(state.lv + 1, pids);
+    var idx = {}, k;
+    for (k in state.spawnIdx) if (Object.prototype.hasOwnProperty.call(state.spawnIdx, k)) idx[k] = state.spawnIdx[k];
+    st.spawnIdx = idx;
+    /* 자리 번호를 지켜서 다시 세운다 — 사람마다 늘 같은 자리에서 시작한다 */
+    for (k in st.players) if (Object.prototype.hasOwnProperty.call(st.players, k)) {
+      var s = spawnOf(L.LIST[st.lv], idx[k] || 0);
+      st.players[k].x = s.x; st.players[k].y = s.y;
+    }
+    return st;
   }
 
   global.Sim = {
-    SPEED: SPEED,
-    REACH: REACH,
-    MAX_ACTS: MAX_ACTS,
-    create: create,
-    join: join,
-    leave: leave,
-    adopt: adopt,
-    tick: tick
+    SPEED: SPEED, GRAVITY: GRAVITY, JUMP_V: JUMP_V, MAX_FALL: MAX_FALL,
+    COYOTE: COYOTE, JUMP_BUF: JUMP_BUF, HEAD_BAND: HEAD_BAND, MAX_JUMPS: MAX_JUMPS,
+    create: create, join: join, leave: leave, adopt: adopt,
+    tick: tick, nextLevel: nextLevel
   };
 })(window);
