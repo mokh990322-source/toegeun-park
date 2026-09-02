@@ -20,6 +20,13 @@
    ── 죽음이 없는 이유 ────────────────────────────────────
    떨어지면 그 사람만 시작점에서 되살아난다. 한 명이 실수해서 전원이
    처음부터 다시 하면 사내에서 못 한다.
+
+   ── 문이 즉시 안 닫히는 이유 ────────────────────────────
+   버튼을 딛고 있어야만 문이 열리면, 누른 사람은 구조적으로 못 나간다 —
+   본인이 발판(버튼)을 떠나는 순간 자기 뒤에서 문이 닫힌다. doorT 가 버튼을
+   뗀 뒤에도 남는 시간(초)을 세서, 누른 사람도 뛰어서 출입구까지 갈 여유를
+   준다. 이 값은 state 에 실려 스냅샷을 타고 모든 화면에 똑같이 간다 —
+   호스트만 아는 값이면 승계 순간 나머지 화면의 문이 어긋난다.
    ============================================================ */
 (function (global) {
   'use strict';
@@ -33,6 +40,15 @@
   var HEAD_BAND = 14;       // 발바닥이 이만큼 안이면 남의 머리에 올라선다
   var PUSH = 0.5;           // 가로로 겹쳤을 때 서로 밀어내는 비율
   var MAX_JUMPS = 4;        // 한 틱에 처리할 점프 상한 (밀린 입력 폭주 방지)
+
+  /* 버튼을 뗀 뒤에도 문이 이만큼(초) 더 열려 있는다.
+     3번 판에서 버튼을 누른 사람은 문까지 걸어가고 다시 목표까지 걸어가야
+     하는데, 그동안 아무도 버튼을 대신 눌러줄 수 없다(그게 이 판의 논지다).
+     짧으면 "누른 사람은 구조적으로 못 나간다"는 예전 버그가 그대로 재현되고,
+     길면 버튼이 그냥 스위치가 되어 "누가 남을래"라는 이름이 무의미해진다.
+     4초는 SPEED(240px/s)로 두 칸 남짓(약 900px)을 걸어서 닿을 여유이고,
+     150ms 지연·코요테·점프 버퍼가 다 끼어도 남는 만큼만 얹었다. */
+  var DOOR_LINGER = 4;
 
   var L = null;
   function deps() { if (!L) L = global.Levels; }
@@ -60,7 +76,8 @@
 
   function create(lvIndex, pids) {
     deps();
-    var st = { t: 0, lv: lvIndex | 0, players: {}, door: false, cleared: false, spawnIdx: {} };
+    var st = { t: 0, lv: lvIndex | 0, players: {}, door: false, doorT: 0,
+               cleared: false, spawnIdx: {} };
     var list = pids || [];
     for (var i = 0; i < list.length; i++) {
       st.players[list[i]] = newPlayer(L.LIST[st.lv], i);
@@ -78,7 +95,7 @@
     idx[pid] = spawnIndex | 0;
     players[pid] = newPlayer(L.LIST[state.lv], spawnIndex | 0);
     return { t: state.t, lv: state.lv, players: players, door: state.door,
-             cleared: state.cleared, spawnIdx: idx };
+             doorT: state.doorT || 0, cleared: state.cleared, spawnIdx: idx };
   }
 
   function leave(state, pid) {
@@ -87,7 +104,7 @@
     for (k in state.spawnIdx) if (Object.prototype.hasOwnProperty.call(state.spawnIdx, k) && k !== pid) idx[k] = state.spawnIdx[k];
     delete players[pid];
     return { t: state.t, lv: state.lv, players: players, door: state.door,
-             cleared: state.cleared, spawnIdx: idx };
+             doorT: state.doorT || 0, cleared: state.cleared, spawnIdx: idx };
   }
 
   /* 승계한 호스트가 한 번 부른다. 스냅샷은 전송량 때문에 jseq 를 안 담아서,
@@ -99,7 +116,7 @@
       players[k].jseq = (inputs && inputs[k] && inputs[k].jseq) || 0;
     }
     return { t: state.t, lv: state.lv, players: players, door: state.door,
-             cleared: state.cleared, spawnIdx: state.spawnIdx };
+             doorT: state.doorT || 0, cleared: state.cleared, spawnIdx: state.spawnIdx };
   }
 
   /* 낮은 사람(y 가 큰 쪽)부터 푼다. 받쳐 주는 쪽이 먼저 자리를 잡아야
@@ -211,12 +228,17 @@
       }
     }
 
-    /* ---- 4. 버튼 → 문 ---- */
-    var door = false;
+    /* ---- 4. 버튼 → 문 (뗀 뒤에도 잠깐 열려 있는다) ----
+       버튼이 눌려 있으면 매 틱 타이머를 가득 채운다 — "누르고 있는 동안"과
+       "막 뗀 순간"을 구분할 필요가 없다. 안 눌려 있으면 dt 만큼 줄인다.
+       문이 열려 있나(door)는 타이머가 남아 있나로만 정한다. */
+    var pressed = false;
     for (i = 0; i < keys.length; i++) {
       p = players[keys[i]];
-      if (p.sup === 1 && L.onButton(lv, p.x, p.y)) { door = true; break; }
+      if (p.sup === 1 && L.onButton(lv, p.x, p.y)) { pressed = true; break; }
     }
+    var doorT = pressed ? DOOR_LINGER : Math.max(0, (state.doorT || 0) - dt);
+    var door = doorT > 0;
 
     /* ---- 5. 떨어진 사람은 자기 시작점으로 ---- */
     for (i = 0; i < keys.length; i++) {
@@ -236,7 +258,7 @@
     }
 
     return { t: state.t + dt, lv: state.lv, players: players,
-             door: door, cleared: all, spawnIdx: state.spawnIdx };
+             door: door, doorT: doorT, cleared: all, spawnIdx: state.spawnIdx };
   }
 
   /* 다음 판으로. 마지막 판이면 그대로 둔다. */
@@ -259,6 +281,7 @@
   global.Sim = {
     SPEED: SPEED, GRAVITY: GRAVITY, JUMP_V: JUMP_V, MAX_FALL: MAX_FALL,
     COYOTE: COYOTE, JUMP_BUF: JUMP_BUF, HEAD_BAND: HEAD_BAND, MAX_JUMPS: MAX_JUMPS,
+    DOOR_LINGER: DOOR_LINGER,
     create: create, join: join, leave: leave, adopt: adopt,
     tick: tick, nextLevel: nextLevel
   };

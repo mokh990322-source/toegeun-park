@@ -144,7 +144,7 @@ test('올라가는 중에는 남에게 안 얹힌다', () => {
   assert.notStrictEqual(st.players.a.sup, 2);
 });
 
-test('버튼을 밟으면 문이 열리고 떼면 닫힌다', () => {
+test('버튼을 밟으면 문이 열리고, 뗀 뒤에도 잠깐 열려 있다가 닫힌다', () => {
   const { Sim: S, Levels: L } = W();
   const lv = L.LIST[2];
   const bi = lv.grid.indexOf('B');
@@ -154,9 +154,25 @@ test('버튼을 밟으면 문이 열리고 떼면 닫힌다', () => {
   st.players.a.x = bx; st.players.a.y = by;
   st = run(S, st, idle(['a']), 10);
   assert.strictEqual(st.door, true, '버튼 위에 섰는데 문이 안 열린다');
+  assert.ok(st.doorT > 0, '누르고 있는 동안 타이머가 안 채워졌다');
+
   st.players.a.x = bx + 300;                            // 버튼에서 내려온다
-  st = run(S, st, idle(['a']), 30);
-  assert.strictEqual(st.door, false, '버튼을 떠났는데 문이 닫히지 않는다');
+  st = S.tick(st, idle(['a']), DT);
+  assert.strictEqual(st.door, true,
+    '버튼을 뗀 그 프레임에 바로 닫히면 누른 사람은 구조적으로 못 나간다');
+
+  /* 눈금(DOOR_LINGER)의 절반만 지나면 아직 열려 있어야 하고, 다 지나면
+     닫혀야 한다 — 값을 하드코딩하지 않고 Sim 의 실제 상수로 잰다. */
+  const half = Math.floor((S.DOOR_LINGER / 2) / DT);
+  st = run(S, st, idle(['a']), half);
+  assert.strictEqual(st.door, true, '눈금의 절반이 지났는데 벌써 닫혔다');
+  assert.ok(st.doorT > 0 && st.doorT < S.DOOR_LINGER,
+    '남은 시간이 줄어들고 있어야 한다: ' + st.doorT);
+
+  const rest = Math.ceil((S.DOOR_LINGER / DT)) - half + 5;
+  st = run(S, st, idle(['a']), rest);
+  assert.strictEqual(st.door, false, '눈금이 다 지났는데도 문이 안 닫혔다');
+  assert.strictEqual(st.doorT, 0);
 });
 
 test('전원이 출입구에 있어야 판이 끝난다', () => {

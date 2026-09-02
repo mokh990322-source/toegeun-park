@@ -24,6 +24,12 @@
    ── t 가 두 가지 일을 한다 ──────────────────────────────
    화면 보간의 기준이면서, 호스트가 살아 있는지 판단하는 근거이기도 하다.
    이 값이 3초간 안 늘면 호스트가 죽은 것으로 본다.
+
+   ── d(문 남은 시간)도 반드시 싣는다 ──────────────────────
+   버튼을 뗀 뒤에도 문이 잠깐 열려 있는 시간(Sim.doorT)은 호스트 시뮬레이션
+   안에만 있는 값이다. 안 실으면 승계 전까지 게스트 화면은 카운트다운을
+   전혀 못 그리고, 승계 순간에는 그 값을 아예 모르는 채로(0으로) 새 판정을
+   시작해 문이 남들보다 먼저 닫힌 것처럼 보인다.
    ============================================================ */
 (function (global) {
   'use strict';
@@ -48,6 +54,7 @@
       t: Math.round(state.t * 10),        // 0.1초 단위 틱. 정수라 짧다.
       l: state.lv | 0,
       o: state.door ? 1 : 0,
+      d: Math.round((state.doorT || 0) * 10),   // 문이 닫히기까지 남은 0.1초 단위 시간
       c: state.cleared ? 1 : 0,
       p: p
     };
@@ -56,13 +63,14 @@
   /* 네트워크에서 온 것은 무엇이든 들어올 수 있다. 절대 예외를 던지지 않는다 —
      받는 쪽에서 던지면 그 사람의 화면이 그 자리에서 멈춘다. */
   function unpack(packed, spawnIdx) {
-    var out = { t: 0, lv: 0, players: {}, door: false, cleared: false,
+    var out = { t: 0, lv: 0, players: {}, door: false, doorT: 0, cleared: false,
                 spawnIdx: spawnIdx || {} };
     if (!packed || typeof packed !== 'object') return out;
 
     out.t = (packed.t || 0) / 10;
     out.lv = packed.l | 0;
     out.door = !!packed.o;
+    out.doorT = (packed.d | 0) / 10;
     out.cleared = !!packed.c;
 
     var p = packed.p, k;

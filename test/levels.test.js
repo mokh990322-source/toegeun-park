@@ -2,8 +2,10 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const { load } = require('../testlib/load');
+const R = require('../testlib/reach');
 
 function L() { return load('levels').Levels; }
+function LS() { return load(['levels', 'sim']); }
 
 test('상수와 판 개수', () => {
   const V = L();
@@ -102,20 +104,23 @@ test('inGoal 은 출입구 안에서만 참', () => {
 });
 
 test('1번 판은 혼자서도 출입구까지 갈 수 있는 높이다', () => {
-  const V = L(), lv = V.LIST[0];
-  /* 점프로 오를 수 있는 높이(약 144px = 3.6칸)보다 큰 턱이 1번 판에 있으면
-     혼자 못 깬다. 1번 판은 조작을 익히는 판이라 혼자 되어야 한다. */
-  let worst = 0;
-  for (let cx = 1; cx < V.COLS - 1; cx++) {
-    let floorY = -1;
-    for (let cy = V.ROWS - 1; cy >= 0; cy--) {
-      if (V.at(lv, cx, cy) === '#') { floorY = cy; break; }
-    }
-    if (floorY < 0) continue;
-    let prev = worst;
-    worst = Math.max(prev, 0);
-  }
-  assert.ok(true, '높이 검사는 Step 4 의 눈검사로 대신한다');
+  /* 예전엔 이 자리가 assert.ok(true) 였다 — "Step 4 눈검사로 대신한다"고
+     적어 두고 실제로는 아무것도 안 쟀다. 그래서 2번 판(목마)이 업어 준
+     사람을 영원히 못 나가게 만드는 것도, 3번 판(누가 남을래)이 버튼
+     누른 사람을 못 나가게 만드는 것도 이 시험을 그냥 통과했다.
+     지금은 실제 Sim 상수(점프 속도·중력)로 계산한 도달 높이와 실제
+     충돌 코드(Levels.hits)로 노드 그래프를 만들어(testlib/reach.js)
+     스폰에서 출입구까지 정말 혼자 닿는지를 잰다. 전원-완주 검사는
+     test/completability.test.js 에 있다 — 여긴 1번 판 하나만 본다. */
+  const { Levels: V, Sim: S } = LS();
+  const lv = V.LIST[0];
+  const aloneRise = S.JUMP_V * S.JUMP_V / (2 * S.GRAVITY);
+  const start = R.spawnNode(V, lv, 0);
+  const seen = R.reachable(V, S, lv, false, aloneRise, [start]);
+  const goals = R.goalNodes(V, lv, false);
+  assert.ok(goals.length, '출입구 자리를 못 찾았다');
+  assert.ok(goals.some(g => seen[R.key(g.cx, g.sr)]),
+    '혼자서는 못 닿는 턱이 있다 — 1번 판은 조작을 익히는 판이라 혼자 되어야 한다');
 });
 
 test('안 움직이면 자리가 그대로다 (0 을 넘겨도 축이 안 섞인다)', () => {

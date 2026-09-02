@@ -1,11 +1,11 @@
 /* ============================================================
    퇴근파크 — 그리기
 
-   이 파일은 판정을 하지 않는다. "이 사람이 버튼을 눌렀나", "문이 열렸나"를
-   여기서 다시 계산하면 호스트와 답이 갈려서, 화면에는 열렸다고 나오는데
-   지나가면 막혀 있는 상태가 된다. 필요한 것은 전부 state 에 들어 있다
-   (state.door, player.sup, player.done). 여기서 하는 계산은 걷는 위상처럼
-   틀려도 아무도 손해 보지 않는 것뿐이다.
+   이 파일은 판정을 하지 않는다. "이 사람이 버튼을 눌렀나", "문이 열렸나",
+   "몇 초 남았나"를 여기서 다시 계산하면 호스트와 답이 갈려서, 화면에는
+   열렸다고 나오는데 지나가면 막혀 있는 상태가 된다. 필요한 것은 전부
+   state 에 들어 있다(state.door, state.doorT, player.sup, player.done).
+   여기서 하는 계산은 걷는 위상처럼 틀려도 아무도 손해 보지 않는 것뿐이다.
 
    ── 캔버스가 두 장인 이유 ───────────────────────────────
    #floor(벽·출입구 몸통)는 창 크기가 바뀌거나 판이 바뀔 때만 다시 그린다.
@@ -20,8 +20,11 @@
 (function (global) {
   'use strict';
 
-  var L = null;
-  function deps() { if (!L) L = global.Levels; }
+  var L = null, Sim = null;
+  /* Sim 은 문 카운트다운의 눈금(DOOR_LINGER)을 읽는 용도로만 쓴다 — 열렸나/
+     닫혔나 자체는 여전히 state.door 를 그대로 읽는다(판정은 안 한다).
+     view-layout 테스트처럼 Sim 을 안 실은 자리도 있어 없으면 없는 대로 둔다. */
+  function deps() { if (!L) L = global.Levels; if (!Sim) Sim = global.Sim; }
 
   var scale = 1, dpr = 1;
   var floorDirty = true;
@@ -197,8 +200,11 @@
     }
   }
 
-  /* ---------- 버튼·문 (매 프레임, state.door 그대로) ---------- */
-  function drawSwitches(ctx, lv, lvIndex, doorOpen) {
+  /* ---------- 버튼·문 (매 프레임, state.door 그대로) ----------
+     doorT: 문이 닫히기까지 남은 시간(초). 숫자는 state 에서 그대로 받는다 —
+     여기서 다시 재면(마지막으로 버튼이 언제 떨어졌는지 등) 호스트와 어긋난다.
+     닫혀 있을 때(문이 애초에 안 열렸을 때)는 0 이라 막대·숫자가 안 나온다. */
+  function drawSwitches(ctx, lv, lvIndex, doorOpen, doorT) {
     var g = analyze(lv, lvIndex);
     var TILE = L.TILE;
 
@@ -216,6 +222,27 @@
         /* 열린 문 — 지나갈 수 있으니 안이 비어 보여야 한다 */
         ctx.fillStyle = 'rgba(60,232,212,.10)';
         ctx.fillRect(d.x + 3, d.y + 3, TILE - 6, TILE - 6);
+
+        /* 남은 시간 — 이제 버튼을 뗀다고 바로 안 닫히니, "곧 닫힌다"는
+           긴장을 눈에 보이는 시계로 대신 준다. 막대 길이는 눈금(DOOR_LINGER)
+           대비 비율이고, 숫자는 doorT 를 그대로 찍는다. Sim 이 없으면(레이아웃
+           테스트 등) 막대 없이 숫자만 보여준다. */
+        if (typeof doorT === 'number' && doorT > 0) {
+          var full = (Sim && Sim.DOOR_LINGER) || doorT;
+          var frac = Math.max(0, Math.min(1, doorT / full));
+          var urgent = frac < 0.3;
+          var barW = TILE - 8;
+          ctx.fillStyle = 'rgba(255,255,255,.18)';
+          ctx.fillRect(d.x + 4, d.y - 7, barW, 3);
+          ctx.fillStyle = urgent ? '#f83fa8' : '#3ce8d4';
+          ctx.fillRect(d.x + 4, d.y - 7, barW * frac, 3);
+
+          ctx.fillStyle = urgent ? '#f83fa8' : '#3ce8d4';
+          ctx.font = '700 11px ui-monospace,Consolas,monospace';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'bottom';
+          ctx.fillText(doorT.toFixed(1), d.x + TILE / 2, d.y - 9);
+        }
       } else {
         /* 닫힌 문 — 벽처럼 막혀 보여야 한다 */
         fillRR(ctx, d.x + 2, d.y + 2, TILE - 4, TILE - 4, 3, '#3a2050');
@@ -274,7 +301,7 @@
     if (!state) return;
 
     var lv = L.LIST[state.lv];
-    drawSwitches(ctx, lv, state.lv, !!state.door);
+    drawSwitches(ctx, lv, state.lv, !!state.door, state.doorT);
 
     var pids = Object.keys(state.players).sort();
 
