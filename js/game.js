@@ -1,5 +1,5 @@
 /* ============================================================
-   오버워크드 — 조립
+   퇴근파크 — 조립
 
    네트워크를 만지는 유일한 파일이다. sim.js 는 내가 호스트일 때만 돌린다.
    나머지 파일들은 순수하게 남겨 두어야 규칙 버그를 Node 로 잡을 수 있다.
@@ -17,22 +17,43 @@
    탭을 백그라운드에 두면 requestAnimationFrame 이 멈췄다가 돌아올 때 몇 초짜리
    프레임을 한 번 준다. 그대로 시뮬레이션에 먹이면 그 한 틱에 모두가 화면을
    가로질러 순간이동하고, Interp.correct 도 이상해진다.
+
+   ── 조작은 둘뿐이다 ─────────────────────────────────────
+   좌우(x)와 점프(jseq). 점프는 누른 순간 한 번이라 카운터로 보낸다 —
+   패킷이 밀려도 연타가 안 씹힌다. sim.js 의 tick(state, inputs, dt) 이
+   기대하는 입력 모양이 정확히 { x, jseq } 다.
+
+   ── 그런데 선 위에서는 옛 모양 그대로 보낸다 ──────────────
+   rooms/<code>/in/<pid> 에 걸린 Firebase 규칙은 오버워크드 시절 모양
+   { x, y, act, seq } 만 정확히 받고 그 외는(우리가 쓰고 싶은 { x, jseq }
+   포함) 401 로 튕긴다. 규칙은 이미 게시돼 있고 그대로 쓰는 게 원칙이라
+   (설계 문서 §3), 선 위에서는 그 모양을 그대로 쓰고 seq 칸에 jseq 를
+   싣는다. fromWire() 가 그 경계에서 { x, jseq } 로 되돌린다 — sim.js 는
+   이 사정을 몰라도 된다.
+
+   ── 남을 밟고 있으면 예측을 끈다 (설계 문서 4.4) ─────────
+   내 캐릭터는 땅·공중(sup 0/1)이면 로컬에서 먼저 움직이고 호스트 값으로
+   당긴다(Interp.correct). 그런데 내가 밟고 선 게 남의 캐릭터(sup===2)면
+   내 화면 속 그 사람은 150ms 과거라, 그 위에서 예측하면 매 프레임 어긋나
+   "분명 밟았는데 떨어졌다"가 된다. sup===2 인 동안은 예측을 완전히 끄고
+   호스트가(guest 라면 보간까지 끝난) 준 자리를 그대로 따른다 — 조작에
+   150ms 지연이 생기는 대신 발판이 절대 안 어긋난다.
    ============================================================ */
 (function (global) {
   'use strict';
 
-  var W = global.World, St = global.Stations, Sim = global.Sim, Snap = global.Snap;
+  var Sim = global.Sim, Levels = global.Levels, Snap = global.Snap;
   var Interp = global.Interp, Net = global.Net, Room = global.Room;
   var View = global.View, Hud = global.Hud, Sprite = global.Sprite;
 
-  var MAP = W.STAGE1;
-  var MAX_PLAYERS = 8;          // 대기실 인원수 표시(N / 8)에 쓴다
-  var SEND_HZ = 8;             // 입력 쓰기 상한 (초당). 사람 손보다 빠르다.
-  var SNAP_HZ = 10;            // 호스트 스냅샷
-  var SEEN_MS = 2000;          // heartbeat — SEEN_TIMEOUT(10초)의 5분의 1
-  var CLAIM_MS = 1000;         // 승계 판단
-  var WARN_MS = 3000;          // 이만큼 아무것도 안 오면 띠를 띄운다
+  var MAX_PLAYERS = 8;          // 대기실 인원수 표시(N / 8) — 판마다 스폰 자리도 8개다
+  var SEND_HZ = 8;              // 입력 쓰기 상한 (초당). 사람 손보다 빠르다.
+  var SNAP_HZ = 10;             // 호스트 스냅샷
+  var SEEN_MS = 2000;           // heartbeat — SEEN_TIMEOUT(10초)의 5분의 1
+  var CLAIM_MS = 1000;          // 승계 판단
+  var WARN_MS = 3000;           // 이만큼 아무것도 안 오면 띠를 띄운다
   var DT_MAX = 0.1;
+  var CLEAR_HOLD_MS = 1500;     // 판을 깬 뒤 "클리어!"를 보여 주는 시간
 
   /* ---------- 나 ---------- */
   var pid = null;
@@ -53,28 +74,37 @@
   var lastEventAt = null;
   var claimedAt = 0;
 
+  /* 방금까지 'play' 였는지 — 판이 끝나 로비/완주 화면으로 돌아온 순간을
+     잡아내는 데 쓴다. 이게 없으면 로비에 남아 있는 지난 판의 st 를 다음
+     호스트가 그대로 이어받아 끝난 판을 재생하게 된다. */
+  var sawPlay = false;
+
   /* ---------- 시뮬레이션 / 그리는 세계 ---------- */
-  var simState = null;         // 내가 호스트일 때만 있다
+  var simState = null;          // 내가 호스트일 때만 있다
   var drawState = null;
   var buf = new Interp.Buffer();
   var wasHost = false;
+  var clearedAt = 0;             // 지금 판이 cleared 된 시각(ms). 0 이면 아직
+  var doneSent = false;          // 마지막 판 완주를 이미 알렸는지
 
   /* ---------- 입력 ---------- */
   var keys = {};
-  var myInput = { x: 0, y: 0, act: 0, seq: 0 };
+  var myInput = { x: 0, jseq: 0 };
   var sentStr = '';
   var lastSendMs = 0;
 
-  /* ---------- 로컬 예측 ---------- */
+  /* ---------- 로컬 예측 ----------
+     drawState.players[pid] 를 그대로 베끼지 않는다 — 물리 상태(coy, buf,
+     jseq)를 프레임 사이에 들고 있어야 코요테 타임·점프 버퍼가 로컬에서도
+     성립한다. */
   var localPos = null;
-  var localDir = 0;
 
   /* ---------- 계측 ---------- */
   var fps = 0, frames = 0, fpsAt = 0;
   var writeFail = 0;
   var lastSnapBytes = 0;
   var lastSnapAt = 0, lastSeenAt = 0, lastClaimAt = 0, lastHudAt = 0;
-  var prevFrame = 0;
+  var prevFrameMs = 0;
 
   function nowSec() { return global.performance.now() / 1000; }
   function isHost() { return !!(meta && pid && meta.host === pid); }
@@ -117,7 +147,8 @@
     }).then(countWrite);
 
     /* 입력은 빈 값으로 한 번 깔아 둔다. 호스트가 승계될 때 Sim.adopt 가
-       읽을 것이 있어야 하고, 방에 들어오자마자 뭐라도 흘러야 스트림이 산다. */
+       읽을 것이 있어야 하고, 방에 들어오자마자 뭐라도 흘러야 스트림이 산다.
+       선 위의 모양은 옛 4칸 그대로다 — allInputs()/fromWire() 머리말 참고. */
     Net.put('rooms/' + code + '/in/' + pid, { x: 0, y: 0, act: 0, seq: 0 }).then(countWrite);
 
     if (watcher) watcher.close();
@@ -132,7 +163,7 @@
     readForm();
     var c = Room.makeCode();
     Net.put('rooms/' + c + '/meta', {
-      host: pid, phase: 'lobby', stage: 1, born: Date.now()
+      host: pid, phase: 'lobby', born: Date.now()
     }).then(function (r) {
       countWrite(r);
       if (!r.ok) { Hud.toast('방을 만들지 못했습니다. 연결을 확인하세요.'); return; }
@@ -163,6 +194,14 @@
     Net.put('rooms/' + code + '/meta/phase', 'play').then(countWrite);
   }
 
+  /* 완주 화면에서 로비로. 호스트만 판을 다시 짤 수 있다 — 다들 누르면
+     두 사람이 동시에 새 판을 만들게 된다. simState 는 안 건드린다:
+     onRoom 이 phase 가 'play' 를 벗어나는 걸 보고 알아서 비운다. */
+  function doBackToLobby() {
+    if (!isHost()) { Hud.toast('호스트만 로비로 돌아갈 수 있습니다'); return; }
+    Net.put('rooms/' + code + '/meta/phase', 'lobby').then(countWrite);
+  }
+
   /* 대기실에서 캐릭터를 바꾼다. Hud 가 이미 잠긴 칸의 클릭을 막지만,
      여기서도 한 번 더 확인한다 — HUD 는 200ms 주기로만 다시 그려서,
      그 틈에 누가 먼저 그 캐릭터를 가져갔으면 화면이 아직 잠긴 것으로
@@ -186,10 +225,12 @@
     meta = d.meta || null;
     who = d.who || null;
     netIn = d.in || null;
+    var phase = meta && meta.phase;
 
-    var st = d.st || null;
-    if (st && typeof st.t === 'number') {
-      if (st.t !== lastTick) {
+    if (phase === 'play') {
+      sawPlay = true;
+      var st = d.st || null;
+      if (st && typeof st.t === 'number' && st.t !== lastTick) {
         lastTick = st.t;
         lastChangeMs = Date.now();
         lastSnap = st;
@@ -197,9 +238,20 @@
            보간이 시작조차 안 하고 캐릭터가 뚝뚝 끊긴다(interp.js 머리말). */
         if (!isHost()) buf.push(nowSec(), st);
       }
+    } else if (sawPlay) {
+      /* 방금 판이 끝나 로비(또는 완주 화면)로 돌아왔다. Firebase 의 st 는
+         지난 판 것이 그대로 남아 있다 — 신뢰하지 않고 버린다. 안 그러면
+         다음에 누가 호스트를 맡든(같은 사람이든 승계든) 끝난 판을 그대로
+         이어받아 첫 틱부터 cleared=true 로 시작해 버린다. */
+      sawPlay = false;
+      lastSnap = null;
+      lastTick = null;
+      simState = null;
+      wasHost = false;
     }
 
-    if (meta && meta.phase === 'play') Hud.show('Game');
+    if (phase === 'play') Hud.show('Game');
+    else if (phase === 'result') Hud.show('Done');
     else if (code) Hud.show('Lobby');
   }
 
@@ -244,12 +296,23 @@
     return want;
   }
 
+  /* rooms/<code>/in/<pid> 에 이미 게시된 Firebase 규칙이 예전 4칸 모양
+     {x,y,act,seq} 만 정확히 받고 그 외는(우리가 원하는 {x,jseq} 포함) 전부
+     401 로 튕긴다 — 규칙은 "이미 게시돼 있고 그대로 쓴다"(설계 문서 §3).
+     그래서 선(wire) 위에서는 옛 모양을 그대로 쓰고, seq 칸에 jseq 를 실어
+     보낸다. sim.js 는 이 사정을 몰라야 하므로(네트워크를 모른다), 네트워크
+     경계인 여기서 옛 모양 → { x, jseq } 로 바꿔치기한다. */
+  function fromWire(v) {
+    if (!v) return { x: 0, jseq: 0 };
+    return { x: v.x || 0, jseq: v.seq || 0 };
+  }
+
   function allInputs() {
     /* 내 입력은 네트워크를 돌아 오기를 기다리지 않는다. 호스트가 자기 입력을
        150ms 뒤에 받으면 호스트만 조작이 굼떠 보인다. */
     var o = {}, k;
     if (netIn) for (k in netIn) {
-      if (Object.prototype.hasOwnProperty.call(netIn, k)) o[k] = netIn[k];
+      if (Object.prototype.hasOwnProperty.call(netIn, k)) o[k] = fromWire(netIn[k]);
     }
     o[pid] = myInput;
     return o;
@@ -264,22 +327,29 @@
 
     if (!simState) {
       if (lastSnap) {
-        /* 승계 — 남이 돌리던 판을 이어받는다 */
-        simState = Snap.unpack(lastSnap, MAP);
+        /* 승계 — 남이 돌리던 판을 이어받는다. 스냅샷은 spawnIdx 를 안
+           실으므로(전송량 때문에), 지금 살아 있는 순서로 다시 매긴다 —
+           이미 있던 사람의 spawnIdx 를 아는 유일한 방법이다. join() 은
+           이미 players 에 있는 사람에게는 아무것도 안 하기 때문이다. */
+        var idx = {};
+        for (var i = 0; i < alive.length; i++) idx[alive[i]] = i;
+        simState = Snap.unpack(lastSnap, idx);
       } else {
-        simState = Sim.create(MAP, []);
+        simState = Sim.create(0, []);
       }
     }
 
-    for (var i = 0; i < alive.length; i++) simState = Sim.join(simState, alive[i], i);
+    for (var j = 0; j < alive.length; j++) simState = Sim.join(simState, alive[j], j);
 
-    /* 반드시 마지막이다. Snap 은 전송량 때문에 seq 를 안 담아서, 이어받은
-       판의 players[].seq 는 전부 0 이다. 그대로 tick 을 돌리면 각자가 매치
-       내내 보낸 입력 전체(seq 400+)를 "새 액션"으로 오인해 그 자리에서
-       재생한다 — 물건이 순간이동하고 점수가 부풀어 오른다. 지금 입력이
-       말하는 값으로 맞춰 두면 다음 틱에서 want - have 가 0 이 된다. */
+    /* 반드시 마지막이다. Snap 은 전송량 때문에 jseq 를 안 담아서, 이어받은
+       판의 players[].jseq 는 전부 0 이다. 그대로 tick 을 돌리면 각자가 매치
+       내내 보낸 입력 전체를 "새 액션"으로 오인해 그 자리에서 재생한다 —
+       사람이 순간이동하고 점프가 폭죽처럼 터진다. 지금 입력이 말하는
+       값으로 맞춰 두면 다음 틱에서 want - have 가 0 이 된다. */
     simState = Sim.adopt(simState, allInputs());
     wasHost = true;
+    clearedAt = 0;
+    doneSent = false;
   }
 
   function syncPlayers() {
@@ -296,9 +366,35 @@
     }
   }
 
+  /* 판이 끝난(cleared) 뒤 다음으로 넘어가는 시점을 정한다. 다 같이 출입구에
+     모인 그림을 잠깐이라도 보여줘야 "우리가 해냈다"가 느껴진다 — 즉시
+     다음 판으로 끊으면 성취감 없이 장면만 바뀐다. */
+  function advanceLevel(nowMs) {
+    if (!simState.cleared) { clearedAt = 0; return; }
+    if (!clearedAt) clearedAt = nowMs;
+    if (nowMs - clearedAt < CLEAR_HOLD_MS) return;
+
+    if (simState.lv + 1 >= Levels.LIST.length) {
+      /* 마지막 판까지 다 깼다 — 모두를 완주 화면으로 보낸다.
+         phase 값은 rooms/<code>/meta/phase 에 걸린 옛 규칙이 정한 몇 가지
+         값만 받아 준다('lobby','play','result', ... — 'done' 은 401 로
+         튕긴다). 오버워크드 시절 결과 화면 phase 인 'result' 를 그대로
+         빌려 쓴다. 쓰기 왕복이 끝나기 전까지 phase 가 아직 'play' 라 매 틱
+         다시 걸릴 수 있으니 doneSent 로 한 번만 쓴다. */
+      if (!doneSent) {
+        doneSent = true;
+        Net.put('rooms/' + code + '/meta/phase', 'result').then(countWrite);
+      }
+    } else {
+      simState = Sim.nextLevel(simState);
+      clearedAt = 0;
+    }
+  }
+
   function hostTick(dt, nowMs) {
     if (!simState) becomeHost();
     simState = Sim.tick(simState, allInputs(), dt);
+    advanceLevel(nowMs);
     drawState = simState;
 
     if (nowMs - lastSnapAt >= 1000 / SNAP_HZ) {
@@ -319,7 +415,7 @@
 
     /* 뼈대는 최신(b)에서 가져온다. 기계 진행도가 150ms 앞서는 것은 아무도
        못 느끼지만, 위치가 150ms 앞서면 남이 벽을 뚫고 지나가 보인다. */
-    var out = Snap.unpack(s.b, MAP);
+    var out = Snap.unpack(s.b);
     var pa = s.a && s.a.p, pb = s.b && s.b.p;
     if (pa && pb) {
       for (var k in out.players) {
@@ -335,37 +431,84 @@
 
   /* ============================================================
      내 캐릭터 — 먼저 움직이고 나중에 맞춘다
+
+     sim.js 의 tick() 1단계(입력·중력·타일 충돌)를 한 사람분만 그대로
+     되풀이한다. 2단계(남의 머리 위에 올라서기)와 3단계(밀어내기)는 일부러
+     안 한다 — 남의 위치는 150ms 과거라 여기서 흉내내면 매 프레임 호스트와
+     싸운다. 그건 호스트의 몫이다.
      ============================================================ */
 
+  function stepLocalPhysics(lp, ix, jseqWant, dt, lv, doorOpen) {
+    var n = jseqWant - lp.jseq;
+    if (n < 0) n = 0;
+    if (n > Sim.MAX_JUMPS) n = Sim.MAX_JUMPS;
+    if (n > 0) lp.buf = Sim.JUMP_BUF;
+    lp.jseq += n;
+
+    lp.vx = ix * Sim.SPEED;
+    if (ix) lp.face = ix > 0 ? 1 : -1;
+
+    lp.vy += Sim.GRAVITY * dt;
+    if (lp.vy > Sim.MAX_FALL) lp.vy = Sim.MAX_FALL;
+
+    if (lp.sup !== 0) lp.coy = Sim.COYOTE; else lp.coy = Math.max(0, lp.coy - dt);
+    lp.buf = Math.max(0, lp.buf - dt);
+
+    if (lp.buf > 0 && lp.coy > 0) {
+      lp.vy = -Sim.JUMP_V;
+      lp.buf = 0; lp.coy = 0;
+      lp.sup = 0;
+    }
+
+    var rx = Levels.moveX(lv, lp.x, lp.y, lp.vx * dt, doorOpen);
+    lp.x = rx.x;
+    if (rx.hit) lp.vx = 0;
+
+    var wasFalling = lp.vy > 0;
+    var ry = Levels.moveY(lv, lp.x, lp.y, lp.vy * dt, doorOpen);
+    lp.y = ry.y;
+    lp.sup = 0;
+    if (ry.hit) {
+      if (wasFalling) lp.sup = 1;
+      lp.vy = 0;
+    }
+  }
+
   function predict(dt) {
+    /* 호스트는 이미 정답이다. simState 자체가 곧 화면이라 예측할 것이 없고,
+       localPos 를 들고 있으면 나중에 밀려났을 때 낡은 값으로 시작하게
+       된다 — 비워 둔다. */
+    if (isHost()) { localPos = null; return; }
     if (!drawState) return;
     var srv = drawState.players[pid];
+    if (!srv) { localPos = null; return; }
+
     if (!localPos) {
-      if (!srv) return;
-      localPos = { x: srv.x, y: srv.y };
+      localPos = { x: srv.x, y: srv.y, vx: srv.vx || 0, vy: srv.vy || 0,
+                   face: srv.face, sup: srv.sup, coy: 0, buf: 0, jseq: myInput.jseq };
     }
 
-    if (myInput.x || myInput.y) {
-      var len = Math.sqrt(myInput.x * myInput.x + myInput.y * myInput.y);
-      var vx = (myInput.x / len) * Sim.SPEED * dt;
-      var vy = (myInput.y / len) * Sim.SPEED * dt;
-      /* 벽만 본다. 사람끼리 밀기는 호스트가 정한다 — 남의 위치는 150ms 과거라
-         여기서 밀어 보면 매 프레임 호스트와 싸운다. */
-      var np = W.move(MAP, localPos.x, localPos.y, vx, vy);
-      localPos.x = np.x; localPos.y = np.y;
-      if (Math.abs(myInput.x) > Math.abs(myInput.y)) localDir = myInput.x > 0 ? 2 : 1;
-      else localDir = myInput.y > 0 ? 0 : 3;
-    }
+    if (srv.sup === 2) {
+      /* 4.4 규칙: 남을 밟고 있으면 예측을 끈다. jseq 도 지금 값으로 맞춰
+         둔다 — 그래야 내려온 뒤 첫 프레임에 "밟고 있는 동안 눌렀던 점프"가
+         재생되지 않는다(Sim.adopt 와 같은 이유, 대상만 나 한 명이다). */
+      localPos.x = srv.x; localPos.y = srv.y;
+      localPos.vx = srv.vx; localPos.vy = srv.vy;
+      localPos.face = srv.face; localPos.sup = srv.sup;
+      localPos.coy = 0; localPos.buf = 0;
+      localPos.jseq = myInput.jseq;
+    } else {
+      var lv = Levels.LIST[drawState.lv];
+      stepLocalPhysics(localPos, myInput.x || 0, myInput.jseq, dt, lv, !!drawState.door);
 
-    if (srv) {
       var c = Interp.correct(localPos, srv, dt);
       localPos.x = c.x; localPos.y = c.y;
-      /* drawState 가 시뮬레이션 원본(호스트)이면 건드리면 안 된다.
-         호스트는 자기가 곧 정답이라 예측할 것도 없다. */
-      if (drawState !== simState) {
-        srv.x = localPos.x; srv.y = localPos.y; srv.dir = localDir;
-      }
     }
+
+    /* drawState 가 시뮬레이션 원본(호스트)이면 이미 위에서 걸러졌다.
+       guest 라면 drawState 의 내 자리는 아직 150ms 과거로 보간된 값이라,
+       예측한 자리로 덮어써야 내 조작이 즉각 반영돼 보인다. */
+    srv.x = localPos.x; srv.y = localPos.y; srv.face = localPos.face;
   }
 
   /* ============================================================
@@ -419,7 +562,12 @@
     Hud.setWho(who, alive, meta && meta.host, pid, isHost());
     Hud.setCount(alive.length, MAX_PLAYERS);
     Hud.setLobbyCharPick(usedCharMap(who, pid), myChar);
-    if (drawState) Hud.setGoal(drawState.done, drawState.goal.count);
+
+    if (drawState) {
+      var lv = Levels.LIST[drawState.lv] || Levels.LIST[0];
+      Hud.setLevel(drawState.lv + 1, Levels.LIST.length, lv.name);
+      Hud.setCleared(!!drawState.cleared);
+    }
 
     var quiet = (lastEventAt !== null) && (nowMs - lastEventAt > WARN_MS);
     Hud.netWarn(quiet);
@@ -434,28 +582,30 @@
      입력
      ============================================================ */
 
+  function isJumpCode(code) {
+    return code === 'Space' || code === 'ArrowUp' || code === 'KeyW';
+  }
+
   function readKeys() {
-    var x = 0, y = 0;
+    var x = 0;
     if (keys.ArrowLeft || keys.KeyA) x -= 1;
     if (keys.ArrowRight || keys.KeyD) x += 1;
-    if (keys.ArrowUp || keys.KeyW) y -= 1;
-    if (keys.ArrowDown || keys.KeyS) y += 1;
-    myInput.x = x; myInput.y = y;
-    myInput.act = (keys.Space || keys.ShiftLeft || keys.ShiftRight) ? 1 : 0;
+    myInput.x = x;
   }
 
   function sendInput(nowMs) {
-    var s = myInput.x + ',' + myInput.y + ',' + myInput.act + ',' + myInput.seq;
+    var s = myInput.x + ',' + myInput.jseq;
     if (s === sentStr) return;
-    /* 방향키를 붙잡고 있으면 값이 안 바뀌어 쓰기가 아예 없다. 문제는 대각선으로
-       비빌 때다 — 초당 60번 바뀔 수 있고, 8명이면 초당 480번이 되어 입력이
-       스냅샷보다 무거워진다. 초당 8회면 사람 손보다 빠르다. */
+    /* 방향키를 붙잡고 있으면 값이 안 바뀌어 쓰기가 아예 없다. 문제는 좌우를
+       빠르게 번갈아 누를 때다 — 초당 60번 바뀔 수 있고, 8명이면 초당 480번이
+       되어 입력이 스냅샷보다 무거워진다. 초당 8회면 사람 손보다 빠르다. */
     if (nowMs - lastSendMs < 1000 / SEND_HZ) return;
     lastSendMs = nowMs;
     sentStr = s;
-    Net.put('rooms/' + code + '/in/' + pid, {
-      x: myInput.x, y: myInput.y, act: myInput.act, seq: myInput.seq
-    }).then(countWrite);
+    /* 선 위에서는 옛 4칸 모양을 쓴다 — seq 칸에 jseq 를 싣는다.
+       (allInputs() 위 fromWire() 머리말 참고) */
+    Net.put('rooms/' + code + '/in/' + pid,
+      { x: myInput.x, y: 0, act: 0, seq: myInput.jseq }).then(countWrite);
   }
 
   function bindKeys() {
@@ -464,11 +614,10 @@
       var t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
       keys[e.code] = true;
-      if (e.code === 'Space' || e.code === 'ShiftLeft' || e.code === 'ShiftRight' ||
-          e.code === 'Enter' || e.code === 'KeyE') {
-        /* 액션은 키를 누른 순간 한 번이다. seq 를 올리면 호스트가 늘어난
+      if (isJumpCode(e.code)) {
+        /* 점프는 키를 누른 순간 한 번이다. jseq 를 올리면 호스트가 늘어난
            만큼 처리한다 — 패킷이 밀려도 연타가 씹히지 않는다. */
-        myInput.seq++;
+        myInput.jseq++;
       }
       if (e.code.indexOf('Arrow') === 0 || e.code === 'Space') e.preventDefault();
     });
@@ -479,12 +628,14 @@
 
   /* ============================================================
      루프
+
+     advance(ts) 가 유일한 프레임 함수다. requestAnimationFrame 도 이걸
+     부르고, 확인 코드도 game.step(ts) 로 똑같이 이걸 부른다 — 숨은 탭에서는
+     requestAnimationFrame 이 아예 안 돌아서, 조립을 검증하려면 같은 함수를
+     타임스탬프만 직접 넣어 호출할 방법이 있어야 한다.
      ============================================================ */
 
-  /* 프레임 한 장. frame() 이 dt 를 재서 부르고, 확인 코드가 game.step(dt) 로
-     직접 부를 수도 있다 — 숨은 탭에서는 requestAnimationFrame 이 아예 안 돌아서
-     그러지 않으면 조립을 브라우저에서 검증할 방법이 없다. */
-  function step(dt, nowMs) {
+  function tick(dt, nowMs) {
     var els = Hud.els();
     var sc = View.layout(els.floor, els.actors);
 
@@ -512,20 +663,26 @@
     api.lastSnapBytes = lastSnapBytes;
   }
 
-  function frame(ts) {
-    global.requestAnimationFrame(frame);
-    var t = ts / 1000;
-    var dt = prevFrame ? (t - prevFrame) : 0;
-    prevFrame = t;
+  /* ts: performance.now() 계열 밀리초. 첫 호출은 prevFrameMs 가 없어 dt=0 —
+     그 프레임엔 아무도 안 움직인다. */
+  function advance(ts) {
+    var dt = prevFrameMs ? (ts - prevFrameMs) / 1000 : 0;
+    prevFrameMs = ts;
     if (dt < 0) dt = 0;
     /* 백그라운드에 있다 돌아오면 몇 초짜리 프레임이 한 번 온다. 그대로 먹이면
        그 한 틱에 모두가 화면을 가로질러 순간이동한다. */
     if (dt > DT_MAX) dt = DT_MAX;
 
     frames++;
-    if (t - fpsAt >= 1) { fps = Math.round(frames / (t - fpsAt)); frames = 0; fpsAt = t; }
+    var tSec = ts / 1000;
+    if (tSec - fpsAt >= 1) { fps = Math.round(frames / (tSec - fpsAt)); frames = 0; fpsAt = tSec; }
 
-    step(dt, Date.now());
+    tick(dt, Date.now());
+  }
+
+  function frame(ts) {
+    global.requestAnimationFrame(frame);
+    advance(ts);
   }
 
   /* ============================================================
@@ -535,7 +692,7 @@
   function boot() {
     pid = makePid();
 
-    Hud.init({ create: doCreate, join: doJoin, start: doStart, pickChar: doPickChar });
+    Hud.init({ create: doCreate, join: doJoin, start: doStart, lobby: doBackToLobby, pickChar: doPickChar });
 
     var els = Hud.els();
     try {
@@ -548,7 +705,7 @@
     var h = Room.cleanCode((global.location.hash || '').replace('#', ''));
     if (h && els.roomInput) els.roomInput.value = h;
 
-    Hud.setGoal(0, St.STAGE1_GOAL.count);
+    Hud.setLevel(1, Levels.LIST.length, Levels.LIST[0].name);
     Hud.show('Start');
     bindKeys();
 
@@ -592,12 +749,13 @@
     pid: null, code: null, meta: null, who: null, state: null,
     scale: 1, fps: 0, writeFail: 0, lastSnapBytes: 0,
     isHost: isHost,
-    /* 확인용 손잡이 — Step 6·7 과 Task 12 가 이 값들을 읽는다 */
+    /* 확인용 손잡이 */
     sim: function () { return simState; },
     buffer: function () { return buf; },
     inputs: function () { return allInputs(); },
+    local: function () { return localPos; },
     myInput: myInput,
-    step: function (dt) { step(Math.min(dt || 1 / 60, DT_MAX), Date.now()); },
+    step: advance,
     lastTick: function () { return lastTick; },
     lastEventAt: function () { return lastEventAt; },
     leaveRoom: function () {

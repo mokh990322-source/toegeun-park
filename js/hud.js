@@ -1,5 +1,5 @@
 /* ============================================================
-   오버워크드 — DOM UI (시작 · 대기실 · 상단바)
+   퇴근파크 — DOM UI (시작 · 대기실 · 상단바 · 완주 화면)
 
    캔버스 안에 버튼을 그리지 않는다. 닉네임 입력과 코드 붙여넣기는 브라우저가
    이미 잘 하는 일이고, 그걸 캔버스로 다시 만들면 한글 입력기에서 깨진다.
@@ -13,7 +13,7 @@
   var doc = global.document;
   function $(id) { return doc.getElementById(id); }
 
-  var on = {};                 // create, join, start, pick, pickChar
+  var on = {};                 // create, join, start, lobby, pick, pickChar
   var els = {};
   var pickIdx = 0;
   var pickCanvases = [];
@@ -21,9 +21,9 @@
 
   function cache() {
     ['nick', 'charPick', 'btnCreate', 'roomInput', 'btnJoin',
-     'screenStart', 'screenLobby', 'screenGame',
+     'screenStart', 'screenLobby', 'screenGame', 'screenDone', 'btnLobby',
      'roomCode', 'playerCount', 'btnCopyLink', 'whoList', 'charPickLobby', 'btnStart',
-     'goalNow', 'goalNeed', 'floor', 'actors', 'netWarn',
+     'lvNow', 'lvTotal', 'lvName', 'clearBanner', 'floor', 'actors', 'netWarn',
      'stat', 'hint'].forEach(function (id) { els[id] = $(id); });
   }
 
@@ -142,7 +142,7 @@
 
   /* ---------- 화면 전환 ---------- */
   function show(which) {
-    ['screenStart', 'screenLobby', 'screenGame'].forEach(function (id) {
+    ['screenStart', 'screenLobby', 'screenGame', 'screenDone'].forEach(function (id) {
       var e = els[id];
       if (!e) return;
       if (id === 'screen' + which) e.classList.remove('hidden');
@@ -215,10 +215,23 @@
     }
   }
 
-  /* ---------- 게임 상단바 ---------- */
-  function setGoal(now, need) {
-    if (els.goalNow) els.goalNow.textContent = String(now);
-    if (els.goalNeed) els.goalNeed.textContent = String(need);
+  /* ---------- 게임 상단바 ----------
+     도착 인원수는 view.js 가 캔버스 위에 이미 그린다(drawProgress) — 여기서
+     또 세면 같은 값을 두 군데서 관리하게 된다. 상단바는 "지금 몇 판인지"만
+     맡는다. */
+  function setLevel(now, total, name) {
+    if (els.lvNow) els.lvNow.textContent = String(now);
+    if (els.lvTotal) els.lvTotal.textContent = String(total);
+    if (els.lvName) els.lvName.textContent = name || '';
+  }
+
+  /* 전원 도착(state.cleared)을 잠깐 크게 보여준다. 판정은 game.js 가 하고
+     여기서는 켜고 끄기만 한다 — 이 파일에서 다시 판정하면 호스트와 화면이
+     갈릴 수 있다. */
+  function setCleared(show) {
+    var e = els.clearBanner;
+    if (!e) return;
+    if (show) e.classList.remove('hidden'); else e.classList.add('hidden');
   }
 
   function setStat(text) {
@@ -252,6 +265,7 @@
     if (els.btnCreate) els.btnCreate.onclick = function () { if (on.create) on.create(); };
     if (els.btnJoin) els.btnJoin.onclick = function () { if (on.join) on.join(); };
     if (els.btnStart) els.btnStart.onclick = function () { if (on.start) on.start(); };
+    if (els.btnLobby) els.btnLobby.onclick = function () { if (on.lobby) on.lobby(); };
 
     if (els.roomInput) {
       els.roomInput.oninput = function () {
@@ -297,7 +311,8 @@
     setCode: setCode,
     setCount: setCount,
     setWho: setWho,
-    setGoal: setGoal,
+    setLevel: setLevel,
+    setCleared: setCleared,
     setStat: setStat,
     netWarn: netWarn,
     toast: toast
