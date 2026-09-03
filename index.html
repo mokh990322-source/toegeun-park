@@ -129,6 +129,23 @@ input:focus{border-color:var(--cyan);box-shadow:0 0 14px rgba(60,232,212,.35);}
 .wchar{font-family:var(--mono);font-size:13px;color:var(--txt-hi);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .crown{font-size:17px;flex:none;}
+/* AI 표시 — 이름 옆에 붙여서 로스터를 훑으면 사람이 몇인지 바로 세어진다 */
+.aitag{margin-left:6px;padding:1px 5px;border-radius:5px;font-family:var(--mono);
+  font-size:11px;font-weight:800;letter-spacing:.5px;vertical-align:1px;
+  color:#0b0720;background:var(--yellow);}
+
+/* AI 넣고 빼기 — 시작 버튼 바로 위에 둔다. 혼자 들어온 사람이 제일 먼저
+   찾게 되는 것이고, 못 찾으면 혼자 대기실에서 시작만 누르다 나간다. */
+.botRow{display:flex;align-items:center;gap:8px;margin-top:14px;padding:10px 12px;
+  border-radius:10px;background:rgba(11,7,32,.5);
+  border:2px solid rgba(255,217,61,.25);}
+.botRow .lbl{flex:1;min-width:0;font-family:var(--mono);font-size:13px;
+  color:var(--txt-hi);letter-spacing:.5px;}
+.botRow .lbl b{color:var(--yellow);}
+#botCount{font-family:var(--mono);font-size:13px;font-weight:800;color:var(--yellow);
+  flex:none;margin-right:4px;}
+.botRow button{min-height:38px;font-size:13px;flex:none;padding:0 14px;}
+.botRow button:disabled{opacity:.35;cursor:not-allowed;}
 
 /* 캐릭터 바꾸기(대기실) — 시작 화면 카드와 같은 모양을 쓰되 잠금 상태만 는다 */
 #charPickLobby{margin-bottom:4px;}
@@ -255,6 +272,15 @@ input:focus{border-color:var(--cyan);box-shadow:0 0 14px rgba(60,232,212,.35);}
     </div>
     <p class="controlsHint">←→ / A D 로 이동 &nbsp;·&nbsp; <b>Space</b> / ↑ / W 로 점프</p>
 
+    <!-- 사람이 모자라도 놀 수 있게. 2번 판(목마)은 최소 두 명이라
+         혼자 들어왔으면 여기서 AI 를 하나는 넣어야 한다. -->
+    <div class="botRow">
+      <span class="lbl">사람이 모자라면 <b>AI 동료</b>를 넣으세요</span>
+      <span id="botCount">AI 없음</span>
+      <button id="btnRemoveBot" class="ghost btnx" type="button">−</button>
+      <button id="btnAddBot" class="ghost btnx" type="button">+ AI</button>
+    </div>
+
     <div class="row">
       <button id="btnStart" class="cta btnx">시작</button>
       <button id="btnCopyLink" class="ghost btnx small">초대 링크 복사</button>
@@ -285,11 +311,12 @@ input:focus{border-color:var(--cyan);box-shadow:0 0 14px rgba(60,232,212,.35);}
 <script src="js/room.js"></script>
 <script src="js/levels.js"></script>
 <script src="js/sim.js"></script>
+<script src="js/bot.js"></script>
 <script src="js/snap.js"></script>
 <script src="js/interp.js"></script>
 <script src="js/sprite.js"></script>
 <script src="js/view.js"></script>
-<script src="js/hud.js?v=park3"></script>
-<script src="js/game.js?v=park3"></script>
+<script src="js/hud.js?v=park4"></script>
+<script src="js/game.js?v=park4"></script>
 </body>
 </html>

@@ -31,6 +31,17 @@
    싣는다. fromWire() 가 그 경계에서 { x, jseq } 로 되돌린다 — sim.js 는
    이 사정을 몰라도 된다.
 
+   ── AI 동료 ─────────────────────────────────────────────
+   봇도 who 에 이름을 올린 진짜 참가자다. 다른 참가자에게는 사람과 구분되지
+   않는다 — 스냅샷에 같이 실리고, 로스터에 같이 뜨고, 캐릭터도 하나씩
+   차지한다. 다른 것은 딱 둘이다.
+     1) 입력을 호스트가 대신 만든다(js/bot.js). 그러니 봇 생각은 호스트만
+        한다 — 둘이 만들면 판이 갈린다.
+     2) heartbeat 도 호스트가 대신 찍어 준다. 그래서 호스트가 사라지면
+        봇도 10초 뒤 같이 사라진다. 주인 없는 봇이 방에 남는 것보다 낫다.
+   호스트 승계 후보에서는 뺀다 — 봇을 호스트로 뽑으면 아무도 시뮬레이션을
+   안 돌린다.
+
    ── 남을 밟고 있으면 예측을 끈다 (설계 문서 4.4) ─────────
    내 캐릭터는 땅·공중(sup 0/1)이면 로컬에서 먼저 움직이고 호스트 값으로
    당긴다(Interp.correct). 그런데 내가 밟고 선 게 남의 캐릭터(sup===2)면
@@ -45,6 +56,7 @@
   var Sim = global.Sim, Levels = global.Levels, Snap = global.Snap;
   var Interp = global.Interp, Net = global.Net, Room = global.Room;
   var View = global.View, Hud = global.Hud, Sprite = global.Sprite;
+  var Bot = global.Bot;
 
   var MAX_PLAYERS = 8;          // 대기실 인원수 표시(N / 8) — 판마다 스폰 자리도 8개다
   var SEND_HZ = 8;              // 입력 쓰기 상한 (초당). 사람 손보다 빠르다.
@@ -86,6 +98,11 @@
   var wasHost = false;
   var clearedAt = 0;             // 지금 판이 cleared 된 시각(ms). 0 이면 아직
   var doneSent = false;          // 마지막 판 완주를 이미 알렸는지
+
+  /* ---------- AI 동료 ----------
+     botMinds 는 봇마다 "지금 경로의 몇 번째"인지를 들고 있는 기억이고,
+     botIn 은 이번 프레임에 봇이 낸 입력이다. 둘 다 호스트에게만 있다. */
+  var botMinds = {}, botIn = {};
 
   /* ---------- 입력 ---------- */
   var keys = {};
@@ -202,6 +219,58 @@
     Net.put('rooms/' + code + '/meta/phase', 'lobby').then(countWrite);
   }
 
+  /* ============================================================
+     AI 동료 넣고 빼기 (호스트만)
+     ============================================================ */
+
+  /* 안 쓰이는 봇 번호 중 가장 작은 것. 번호를 다시 쓰는 이유는 넣었다
+     뺐다를 반복해도 이름이 'AI 8호'까지 치솟지 않게 하기 위해서다. */
+  function freeBotPid() {
+    for (var n = 1; n <= MAX_PLAYERS; n++) {
+      var b = Bot.PREFIX + n;
+      if (!who || !who[b]) return b;
+    }
+    return null;
+  }
+
+  function botList() {
+    var out = [], k;
+    for (k in who) {
+      if (Object.prototype.hasOwnProperty.call(who, k) && Bot.isBot(k)) out.push(k);
+    }
+    return out.sort();
+  }
+
+  function doAddBot() {
+    if (!isHost()) { Hud.toast('호스트만 AI 를 넣을 수 있습니다'); return; }
+    if (aliveList().length >= MAX_PLAYERS) { Hud.toast('자리가 다 찼습니다'); return; }
+    var bpid = freeBotPid();
+    if (!bpid) { Hud.toast('자리가 다 찼습니다'); return; }
+
+    /* 캐릭터는 사람과 똑같이 하나씩 차지한다 — 안 그러면 같은 얼굴이
+       둘이 되어 화면에서 누가 누구인지 못 가린다. */
+    var ch = resolveChar(who, bpid, 0);
+    var nm = ((Sprite.CHARS[ch] && Sprite.CHARS[ch].name) || 'AI 동료').slice(0, 12);
+    /* 낙관적으로 화면부터 채운다. 쓰기가 한 바퀴 돌아오기 전까지(약 150ms)
+       버튼을 눌러도 아무 일도 안 일어난 것처럼 보이면 두 번 누르게 된다. */
+    if (!who) who = {};
+    who[bpid] = { name: nm, char: ch, join: Date.now(), seen: Date.now() };
+    Net.put('rooms/' + code + '/who/' + bpid, who[bpid]).then(countWrite);
+    Net.put('rooms/' + code + '/in/' + bpid, { x: 0, y: 0, act: 0, seq: 0 }).then(countWrite);
+  }
+
+  function doRemoveBot() {
+    if (!isHost()) { Hud.toast('호스트만 AI 를 뺄 수 있습니다'); return; }
+    var list = botList();
+    if (!list.length) { Hud.toast('뺄 AI 가 없습니다'); return; }
+    var bpid = list[list.length - 1];
+    if (who) delete who[bpid];
+    delete botMinds[bpid];
+    delete botIn[bpid];
+    Net.del('rooms/' + code + '/who/' + bpid);
+    Net.del('rooms/' + code + '/in/' + bpid);
+  }
+
   /* 대기실에서 캐릭터를 바꾼다. Hud 가 이미 잠긴 칸의 클릭을 막지만,
      여기서도 한 번 더 확인한다 — HUD 는 200ms 주기로만 다시 그려서,
      그 틈에 누가 먼저 그 캐릭터를 가져갔으면 화면이 아직 잠긴 것으로
@@ -259,6 +328,20 @@
     return Room.alive(who, Date.now());
   }
 
+  /* 호스트 승계 판단에만 쓴다. 봇을 후보로 두면 "다음 차례"가 봇에게
+     떨어지고, 봇의 브라우저 같은 건 없으니 아무도 시뮬레이션을 안 돌린다 —
+     그 방은 그대로 멈춘다. Room 은 이 사정을 몰라야 하므로(방 코드와
+     승계 규칙만 아는 파일이다) 여기서 걸러서 넘긴다. */
+  function humansOnly(whoObj) {
+    var o = {}, k;
+    for (k in whoObj) {
+      if (!Object.prototype.hasOwnProperty.call(whoObj, k)) continue;
+      if (Bot.isBot(k)) continue;
+      o[k] = whoObj[k];
+    }
+    return o;
+  }
+
   /* ============================================================
      캐릭터 겹침 방지
 
@@ -313,6 +396,11 @@
     var o = {}, k;
     if (netIn) for (k in netIn) {
       if (Object.prototype.hasOwnProperty.call(netIn, k)) o[k] = fromWire(netIn[k]);
+    }
+    /* 봇 입력은 선을 안 탄다. 호스트가 방금 만든 것을 그대로 쓴다 —
+       Firebase 로 한 바퀴 돌리면 150ms 만 늦어질 뿐 아무도 못 읽는다. */
+    for (k in botIn) {
+      if (Object.prototype.hasOwnProperty.call(botIn, k)) o[k] = botIn[k];
     }
     o[pid] = myInput;
     return o;
@@ -391,8 +479,33 @@
     }
   }
 
+  /* 봇마다 다음 입력을 만든다. 호스트만 부른다.
+     역할은 매 프레임 다시 나눈다 — 봇이 들고 나도 남은 봇들이 알아서
+     빈 역할을 메운다. Bot.assign 은 pid 를 정렬해서 나누므로 같은 봇이
+     같은 역할을 계속 받는다. */
+  function thinkBots(dt) {
+    if (!simState) return;
+    var alive = aliveList(), list = [], i, k;
+    for (i = 0; i < alive.length; i++) if (Bot.isBot(alive[i])) list.push(alive[i]);
+
+    var jobs = Bot.assign(simState.lv, list);
+    var next = {};
+    for (i = 0; i < list.length; i++) {
+      k = list[i];
+      if (!botMinds[k]) botMinds[k] = Bot.mind();
+      next[k] = Bot.step(simState, k, jobs[k], botMinds[k], i, dt);
+    }
+    /* 나간 봇의 기억은 버린다 — 안 그러면 같은 이름으로 새로 들어온 봇이
+       지난 판 중간부터 시작한다. */
+    for (k in botMinds) {
+      if (Object.prototype.hasOwnProperty.call(botMinds, k) && !next[k]) delete botMinds[k];
+    }
+    botIn = next;
+  }
+
   function hostTick(dt, nowMs) {
     if (!simState) becomeHost();
+    thinkBots(dt);
     simState = Sim.tick(simState, allInputs(), dt);
     advanceLevel(nowMs);
     drawState = simState;
@@ -519,6 +632,15 @@
     if (nowMs - lastSeenAt < SEEN_MS) return;
     lastSeenAt = nowMs;
     Net.put('rooms/' + code + '/who/' + pid + '/seen', nowMs).then(countWrite);
+
+    /* 봇은 스스로 살아 있다고 말할 수 없다. 호스트가 대신 찍어 준다 —
+       그래서 호스트가 사라지면 봇도 10초 뒤 함께 사라진다. */
+    if (!isHost() || !who) return;
+    for (var k in who) {
+      if (!Object.prototype.hasOwnProperty.call(who, k)) continue;
+      if (!Bot.isBot(k)) continue;
+      Net.put('rooms/' + code + '/who/' + k + '/seen', nowMs).then(countWrite);
+    }
   }
 
   function claimCheck(nowMs) {
@@ -527,7 +649,7 @@
     if (!meta) return;
 
     var act = Room.shouldClaim({
-      me: pid, host: meta.host, who: who,
+      me: pid, host: meta.host, who: humansOnly(who),
       lastTick: lastTick, lastChangeMs: lastChangeMs,
       lastEventMs: lastEventAt,
       nowMs: nowMs, claimedAtMs: claimedAt
@@ -559,8 +681,9 @@
     lastHudAt = nowMs;
 
     var alive = aliveList();
-    Hud.setWho(who, alive, meta && meta.host, pid, isHost());
+    Hud.setWho(who, alive, meta && meta.host, pid, isHost(), Bot.isBot);
     Hud.setCount(alive.length, MAX_PLAYERS);
+    Hud.setBotButtons(isHost(), botList().length, alive.length >= MAX_PLAYERS);
     Hud.setLobbyCharPick(usedCharMap(who, pid), myChar);
 
     if (drawState) {
@@ -692,7 +815,8 @@
   function boot() {
     pid = makePid();
 
-    Hud.init({ create: doCreate, join: doJoin, start: doStart, lobby: doBackToLobby, pickChar: doPickChar });
+    Hud.init({ create: doCreate, join: doJoin, start: doStart, lobby: doBackToLobby,
+               pickChar: doPickChar, addBot: doAddBot, removeBot: doRemoveBot });
 
     var els = Hud.els();
     try {
@@ -739,6 +863,15 @@
       try {
         global.fetch(Net.url('rooms/' + code + '/who/' + pid),
           { method: 'DELETE', keepalive: true });
+        /* 내가 호스트면 봇의 heartbeat 도 나와 함께 멈춘다. 어차피 10초 뒤
+           사라지지만, 그 10초 동안 대기실에 조종되지 않는 봇이 서 있다. */
+        if (isHost()) {
+          var list = botList();
+          for (var i = 0; i < list.length; i++) {
+            global.fetch(Net.url('rooms/' + code + '/who/' + list[i]),
+              { method: 'DELETE', keepalive: true });
+          }
+        }
       } catch (e) {}
     });
 
@@ -751,6 +884,8 @@
     isHost: isHost,
     /* 확인용 손잡이 */
     sim: function () { return simState; },
+    bots: function () { return { minds: botMinds, inputs: botIn }; },
+    addBot: doAddBot, removeBot: doRemoveBot,
     buffer: function () { return buf; },
     inputs: function () { return allInputs(); },
     local: function () { return localPos; },

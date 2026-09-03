@@ -13,7 +13,7 @@
   var doc = global.document;
   function $(id) { return doc.getElementById(id); }
 
-  var on = {};                 // create, join, start, lobby, pick, pickChar
+  var on = {};                 // create, join, start, lobby, pick, pickChar, addBot, removeBot
   var els = {};
   var pickIdx = 0;
   var pickCanvases = [];
@@ -24,7 +24,7 @@
      'screenStart', 'screenLobby', 'screenGame', 'screenDone', 'btnLobby',
      'roomCode', 'playerCount', 'btnCopyLink', 'whoList', 'charPickLobby', 'btnStart',
      'lvNow', 'lvTotal', 'lvName', 'clearBanner', 'floor', 'actors', 'netWarn',
-     'stat', 'hint'].forEach(function (id) { els[id] = $(id); });
+     'stat', 'hint', 'btnAddBot', 'btnRemoveBot', 'botCount'].forEach(function (id) { els[id] = $(id); });
   }
 
   /* ---------- 캐릭터 고르기 (시작 화면) ----------
@@ -166,7 +166,10 @@
      로스터가 대기실에서 제일 커야 한다 — 얼굴을 34px 로는 못 알아본다.
      캐릭터 이름도 같이 보여준다. "누가 뭘로 하는지"가 초대 링크 복사보다
      중요한 정보라서다. */
-  function setWho(who, order, hostPid, mePid, iAmHost) {
+  /* isBot: pid 를 받아 봇인지 알려 주는 함수(game.js 가 넘긴다). 여기서
+     직접 판단하지 않는다 — "봇 pid 는 이렇게 생겼다"를 아는 곳이 둘이 되면
+     한쪽만 고쳐 놓고 다른 쪽을 잊는다. */
+  function setWho(who, order, hostPid, mePid, iAmHost, isBot) {
     var ul = els.whoList;
     if (!ul) return;
     ul.innerHTML = '';
@@ -191,6 +194,17 @@
       nm.textContent = (w.name || '???') + (pid === mePid ? ' (나)' : '');
       box.appendChild(nm);
 
+      /* 봇이라고 대놓고 알려 준다. 시작 전에 "지금 사람이 몇이지"를 셀 수
+         있어야 몇 판째에 목마를 누가 받칠지 이야기가 된다.
+         이름 자체에는 안 넣는다 — 이름은 게임 화면에서 머리 위에도 그려지고
+         (view.js), 거기까지 'AI' 를 달면 12자 제한 안에서 진짜 이름이 잘린다. */
+      if (isBot && isBot(pid)) {
+        var bt = doc.createElement('span');
+        bt.className = 'aitag';
+        bt.textContent = 'AI';
+        nm.appendChild(bt);
+      }
+
       var ch = doc.createElement('span');
       ch.className = 'wchar';
       ch.textContent = (global.Sprite.CHARS[ci] && global.Sprite.CHARS[ci].name) || '';
@@ -213,6 +227,18 @@
       els.btnStart.disabled = !iAmHost;
       els.btnStart.textContent = iAmHost ? '시작' : '호스트가 시작하기를 기다리는 중…';
     }
+  }
+
+  /* AI 버튼. 호스트가 아니면 아예 못 누르게 한다 — 손님이 눌러도 아무 일도
+     안 일어나는 버튼을 살아 있는 것처럼 보여 주면 고장으로 읽힌다. */
+  function setBotButtons(iAmHost, nBots, full) {
+    if (els.botCount) els.botCount.textContent = nBots ? ('AI ' + nBots + '명') : 'AI 없음';
+    if (els.btnAddBot) {
+      els.btnAddBot.disabled = !iAmHost || full;
+      els.btnAddBot.title = !iAmHost ? '호스트만 넣을 수 있습니다'
+                                     : (full ? '자리가 다 찼습니다' : '');
+    }
+    if (els.btnRemoveBot) els.btnRemoveBot.disabled = !iAmHost || !nBots;
   }
 
   /* ---------- 게임 상단바 ----------
@@ -266,6 +292,8 @@
     if (els.btnJoin) els.btnJoin.onclick = function () { if (on.join) on.join(); };
     if (els.btnStart) els.btnStart.onclick = function () { if (on.start) on.start(); };
     if (els.btnLobby) els.btnLobby.onclick = function () { if (on.lobby) on.lobby(); };
+    if (els.btnAddBot) els.btnAddBot.onclick = function () { if (on.addBot) on.addBot(); };
+    if (els.btnRemoveBot) els.btnRemoveBot.onclick = function () { if (on.removeBot) on.removeBot(); };
 
     if (els.roomInput) {
       els.roomInput.oninput = function () {
@@ -311,6 +339,7 @@
     setCode: setCode,
     setCount: setCount,
     setWho: setWho,
+    setBotButtons: setBotButtons,
     setLevel: setLevel,
     setCleared: setCleared,
     setStat: setStat,

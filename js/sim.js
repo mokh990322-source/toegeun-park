@@ -132,6 +132,18 @@
     return keys;
   }
 
+  /* 몸이 벽 안에 박혔을 때 가장 가까운 빈자리를 찾는다. 가던 쪽(face)을
+     먼저 본다. 두 칸을 넘게 찾아도 없으면 포기한다 — 그럴 일이 생겼다면
+     문 문제가 아니라 다른 데가 잘못된 것이다. */
+  function unstick(lv, p, door) {
+    var first = p.face < 0 ? -1 : 1;
+    for (var d = 2; d <= 2 * L.TILE + L.PW; d += 2) {
+      if (!L.hits(lv, p.x + first * d, p.y, door)) return p.x + first * d;
+      if (!L.hits(lv, p.x - first * d, p.y, door)) return p.x - first * d;
+    }
+    return null;
+  }
+
   function tick(state, inputs, dt) {
     deps();
     var lv = L.LIST[state.lv];
@@ -217,6 +229,11 @@
         var a = players[keys[i]], b = players[keys[m]];
         var dy = Math.abs((a.y + L.PH / 2) - (b.y + L.PH / 2));
         if (dy > L.PH * 0.7) continue;               // 위아래로 쌓인 건 안 민다
+        /* 출입구 안에서는 안 민다. 출입구는 두 칸(80px)이라 몸(28px)이
+           서너 개면 꽉 찬다 — 미는 규칙을 그대로 두면 8명이 모이는 순간
+           서로를 밖으로 밀어내서 "전원 도착"이 영원히 성립하지 않는다.
+           다 들어온 사람들끼리 겹쳐 보이는 편이 낫다. */
+        if (L.inGoal(lv, a.x, a.y) && L.inGoal(lv, b.x, b.y)) continue;
         var ax = a.x + L.PW / 2, bx = b.x + L.PW / 2;
         var gap = Math.abs(ax - bx);
         if (gap >= L.PW) continue;
@@ -239,6 +256,20 @@
     }
     var doorT = pressed ? DOOR_LINGER : Math.max(0, (state.doorT || 0) - dt);
     var door = doorT > 0;
+
+    /* ---- 4b. 닫힌 문에 낀 사람 빼내기 ----
+       문이 열린 사이 문 칸에 들어갔다가 그대로 닫히면 몸이 벽 속에 박힌다.
+       slide 는 이미 겹친 자리에서는 0 을 돌려주므로 좌우 어느 쪽으로도 못
+       가고, 점프해도 못 빠진다 — 그 사람은 판이 끝날 때까지 갇히고, 전원
+       도착 조건 때문에 판 자체가 안 끝난다.
+       가던 쪽으로 먼저 밀어 본다. 문턱에 서 있다가 뒤로 되돌려지는 것보다
+       지나가던 방향으로 통과시키는 편이 억울하지 않다. */
+    for (i = 0; i < keys.length; i++) {
+      p = players[keys[i]];
+      if (!L.hits(lv, p.x, p.y, door)) continue;
+      var free = unstick(lv, p, door);
+      if (free !== null) p.x = free;
+    }
 
     /* ---- 5. 떨어진 사람은 자기 시작점으로 ---- */
     for (i = 0; i < keys.length; i++) {
