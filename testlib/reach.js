@@ -187,6 +187,14 @@ function check(w, lvIndex, players) {
       problems.push(i + '번 시작 자리가 가시 위다');
     } else if (settle(w, lv, s.x, s.y, empty) === null) {
       problems.push(i + '번 시작 자리 밑에 바닥이 없다 (' + Math.round(s.x) + ')');
+    } else {
+      /* 되살아나는 자리는 언제나 안전해야 한다. 떨어진 사람이 여기로 돌아오는데
+         가시 위면 돌아오자마자 또 죽고, 그게 라운드 재시작이면 영원히 반복된다.
+         깜빡이는 가시는 지금 들어가 있어도 곧 나오므로 두 위상 다 본다. */
+      var sy = settle(w, lv, s.x, s.y, empty);
+      if (G.inHazard(lv, s.x, sy, true) || G.inHazard(lv, s.x, sy, false)) {
+        problems.push(i + '번 시작 자리가 가시에 닿는다 — 되살아나자마자 또 죽는다');
+      }
     }
     seeds.push([s.x, s.y]);
   }

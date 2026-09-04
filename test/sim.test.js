@@ -279,3 +279,74 @@ test('큰 dt 에도 바닥을 뚫지 않는다', () => {
   assert.strictEqual(W().Grid.hits(L.LIST[0], p.x, p.y, {}), false, '벽 안에 박혔다');
   assert.ok(p.y < L.H + 80, '맵 밖으로 빠졌다');
 });
+
+/* ---- 떨어지는 것과 가시는 대가가 다르다 ---- */
+
+test('떨어져도 라운드는 안 되돌아간다 (그 사람만 시작점으로)', () => {
+  const { Sim: S, Levels: L } = W();
+  let st = S.create(0, ['a', 'b']);
+  st = run(S, st, idle(['a', 'b']), 60);
+  const bWas = { x: st.players.b.x, y: st.players.b.y };
+  const start = { x: st.players.a.x, y: st.players.a.y };
+
+  /* a 를 화면 밖으로 떨어뜨린다. 라운드 시계는 이미 1초쯤 흘렀다. */
+  const rtWas = st.rt;
+  st.players.a.y = L.H + 200;
+  st = S.tick(st, idle(['a', 'b']), DT);
+
+  assert.ok(Math.abs(st.players.a.x - start.x) < 1 && Math.abs(st.players.a.y - start.y) < 1,
+    '떨어진 사람이 시작점으로 안 돌아왔다');
+  assert.ok(Math.abs(st.players.b.x - bWas.x) < 1 && Math.abs(st.players.b.y - bWas.y) < 1,
+    '떨어지지 않은 사람까지 되돌리면 안 된다');
+  assert.ok(st.rt > rtWas, '라운드 시계가 0 으로 돌아갔다 — 떨어진 건 라운드 재시작이 아니다');
+  assert.strictEqual(st.freeze, 0, '떨어졌다고 전원을 멈춰 세우면 안 된다');
+  assert.strictEqual(st.fail, '', '떨어진 것은 "다시!" 가 아니다');
+});
+
+test('가시에 닿으면 라운드가 다 같이 처음부터', () => {
+  const { Sim: S, Levels: L, Grid: G, Tiles: T } = W();
+  const lvIndex = 5;                       // 6번 가시밭
+  const lv = L.LIST[lvIndex];
+  const i = lv.grid.indexOf(T.SPIKE);
+  let st = S.create(lvIndex, ['a', 'b']);
+  const bHome = { x: st.players.b.x, y: st.players.b.y };
+  /* b 를 시작점에서 멀리, 가시 없는 자리에 놓는다. 시작점에 그대로 두면
+     되돌아왔는지 아닌지 구분할 수가 없다. (걸어가게 하면 도중에 가시를
+     밟아서 그것부터 라운드를 되돌린다 — 그래서 자리를 직접 옮긴다.) */
+  st.players.b.x = 25 * L.TILE + 6;
+  st = run(S, st, idle(['a', 'b']), 40);
+  assert.ok(Math.abs(st.players.b.x - bHome.x) > 60, '시험 전제: b 가 시작점에서 떨어져 있어야 한다');
+  const rtWas = st.rt;
+  assert.ok(rtWas > 0.5, '시험 전제: 라운드 시계가 흐르고 있어야 한다');
+
+  /* a 를 가시 칸 한가운데로 옮긴다 */
+  st.players.a.x = (i % L.COLS) * L.TILE + (L.TILE - L.PW) / 2;
+  st.players.a.y = Math.floor(i / L.COLS) * L.TILE + 2;
+  assert.ok(G.inHazard(lv, st.players.a.x, st.players.a.y, true), '시험 전제가 틀렸다');
+
+  st = S.tick(st, idle(['a', 'b']), DT);
+  assert.strictEqual(st.rt, 0, '라운드 시계가 0 으로 돌아가야 한다');
+  assert.strictEqual(st.fail, 'a', '누구 때문인지 남아야 한다');
+  assert.ok(st.freeze > 0, '왜 튕겼는지 볼 시간을 줘야 한다');
+  assert.ok(Math.abs(st.players.b.x - bHome.x) < 1 && Math.abs(st.players.b.y - bHome.y) < 1,
+    '가시는 팀이 같이 물린다 — 안 밟은 사람도 시작점으로 돌아가야 한다: ' +
+    Math.round(st.players.b.x) + ',' + Math.round(st.players.b.y));
+});
+
+test('되살아나는 자리는 판마다 안전하다 (가시 위가 아니다)', () => {
+  const { Levels: L, Grid: G } = W();
+  /* 떨어진 사람이 돌아오는 자리가 가시면 돌아오자마자 또 죽는다.
+     그게 라운드 재시작이면 영원히 반복된다 — 19번 판에서 실제로 그랬다. */
+  L.LIST.forEach((lv, i) => {
+    lv.spawns.forEach((s, k) => {
+      let y = s.y;
+      for (let n = 0; n < 200; n++) {
+        const r = G.moveY(lv, s.x, y, 8, { door: false, cr: {} });
+        y = r.y;
+        if (r.hit) break;
+      }
+      assert.ok(!G.inHazard(lv, s.x, y, true) && !G.inHazard(lv, s.x, y, false),
+        (i + 1) + '번(' + lv.name + ') ' + k + '번 시작 자리가 가시에 닿는다');
+    });
+  });
+});
