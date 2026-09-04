@@ -155,6 +155,26 @@
           fillRR(ctx, x + 1, y + 1, TILE - 2, TILE - 2, 4, '#241a52');
           ctx.fillStyle = 'rgba(163,92,255,.28)';       // --purple
           ctx.fillRect(x + 1, y + 1, TILE - 2, 3);
+        } else if (t === '-') {
+          /* 일방통행 — 얇게 그린다. 두껍게 그리면 벽처럼 보여서
+             "밑에서 뚫고 올라간다"가 눈에 안 읽힌다. */
+          fillRR(ctx, x + 1, y + 2, TILE - 2, 7, 3, '#3a2c6e');
+          ctx.fillStyle = 'rgba(163,92,255,.5)';
+          ctx.fillRect(x + 1, y + 2, TILE - 2, 2);
+        } else if (t === '>' || t === '<') {
+          /* 미는 바닥 — 화살표가 흐르는 방향을 말한다 */
+          fillRR(ctx, x + 1, y + 1, TILE - 2, TILE - 2, 4, '#1d3350');
+          var dir = (t === '>') ? 1 : -1;
+          ctx.fillStyle = 'rgba(60,232,212,.7)';
+          for (var a = 0; a < 3; a++) {
+            var ax = x + 8 + a * 10, ay = y + TILE / 2;
+            ctx.beginPath();
+            ctx.moveTo(ax - dir * 4, ay - 5);
+            ctx.lineTo(ax + dir * 4, ay);
+            ctx.lineTo(ax - dir * 4, ay + 5);
+            ctx.closePath();
+            ctx.fill();
+          }
         } else {
           /* 격자를 아주 옅게 — 완전히 평평하면 판이 밋밋해 보인다 */
           ctx.fillStyle = ((cx + cy) % 2) ? 'rgba(255,255,255,.020)' : 'rgba(255,255,255,.035)';
@@ -197,6 +217,87 @@
       ctx.textAlign = 'center';
       ctx.textBaseline = 'bottom';
       ctx.fillText('EXIT', gx + gw / 2, gy - 6);
+    }
+  }
+
+  /* ---------- 가시 ----------
+     고정 가시는 늘, 깜빡이 가시는 지금 나와 있을 때만 그린다.
+     "나와 있나"는 Sim.blinkOn 이 정한다 — 여기서 다시 재면 호스트와 어긋나
+     화면에는 없는 가시에 죽는다. */
+  function drawSpikes(ctx, lv, rt) {
+    deps();
+    var TILE = L.TILE;
+    var on = Sim.blinkOn(lv, rt || 0);
+    for (var cy = 0; cy < L.ROWS; cy++) {
+      for (var cx = 0; cx < L.COLS; cx++) {
+        var t = lv.grid[cy * L.COLS + cx];
+        if (t !== '^' && t !== '!' && t !== '?') continue;
+        var live = (t === '^') || (t === '!' ? on : !on);
+        var x = cx * TILE, y = cy * TILE;
+        if (!live) {
+          /* 들어가 있어도 자리는 보여 준다. 안 그러면 "여기 가시가 있었나"를
+             매번 새로 기억해야 해서 운으로 죽는다. */
+          ctx.fillStyle = 'rgba(248,63,168,.16)';
+          ctx.fillRect(x + 4, y + TILE - 5, TILE - 8, 3);
+          continue;
+        }
+        ctx.save();
+        ctx.fillStyle = '#f83fa8';
+        ctx.shadowColor = '#f83fa8';
+        ctx.shadowBlur = 8;
+        for (var k = 0; k < 4; k++) {
+          var sx = x + 2 + k * 9;
+          ctx.beginPath();
+          ctx.moveTo(sx, y + TILE);
+          ctx.lineTo(sx + 4.5, y + TILE - 15);
+          ctx.lineTo(sx + 9, y + TILE);
+          ctx.closePath();
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+    }
+  }
+
+  /* ---------- 부서지는 발판 ----------
+     cr[칸] 이 양수면 금이 간 채 버티는 중, 음수면 무너져 있는 중이다.
+     금이 갔을 때 흔들어 주면 "곧 무너진다"가 말 없이 전해진다. */
+  function drawCrumble(ctx, lv, cr, rt) {
+    var TILE = L.TILE;
+    for (var cy = 0; cy < L.ROWS; cy++) {
+      for (var cx = 0; cx < L.COLS; cx++) {
+        if (lv.grid[cy * L.COLS + cx] !== 'x') continue;
+        var idx = cy * L.COLS + cx;
+        var v = (cr && cr[idx]) || 0;
+        var x = cx * TILE, y = cy * TILE;
+        if (v < 0) {
+          ctx.fillStyle = 'rgba(255,255,255,.05)';       // 무너진 자리
+          ctx.fillRect(x + 3, y + 3, TILE - 6, 2);
+          continue;
+        }
+        var shake = v > 0 ? Math.sin(rt * 40) * 1.5 : 0;
+        fillRR(ctx, x + 1 + shake, y + 1, TILE - 2, TILE - 2, 4,
+               v > 0 ? '#5a3a22' : '#3a2c1a');
+        ctx.fillStyle = v > 0 ? 'rgba(255,217,61,.55)' : 'rgba(255,217,61,.25)';
+        ctx.fillRect(x + 1 + shake, y + 1, TILE - 2, 3);
+      }
+    }
+  }
+
+  /* ---------- 움직이는 발판 ----------
+     자리는 라운드 시각(rt)만으로 정해진다. 스냅샷에 실리는 것이 없어서
+     모두의 화면이 저절로 같아진다 — grid.js 머리말 참고. */
+  function drawMovers(ctx, lv, rt) {
+    deps();
+    for (var i = 0; i < lv.movers.length; i++) {
+      var b = global.Grid.moverAt(lv.movers[i], rt || 0);
+      ctx.save();
+      ctx.shadowColor = '#3ce8d4';
+      ctx.shadowBlur = 10;
+      fillRR(ctx, b.x, b.y, b.w, b.h, 4, '#1c6f68');
+      ctx.restore();
+      ctx.fillStyle = '#3ce8d4';
+      ctx.fillRect(b.x, b.y, b.w, 3);
     }
   }
 
@@ -301,6 +402,12 @@
     if (!state) return;
 
     var lv = L.LIST[state.lv];
+    /* 그리는 순서가 곧 겹치는 순서다. 발판을 사람보다 먼저 그려야
+       "타고 있다"가 보인다. 가시는 발판 위에 그려야 "저기 밟으면 죽는다"가
+       보인다. 부서지는 발판은 바닥 성격이라 제일 아래. */
+    drawCrumble(ctx, lv, state.cr, state.rt || 0);
+    drawMovers(ctx, lv, state.rt || 0);
+    drawSpikes(ctx, lv, state.rt || 0);
     drawSwitches(ctx, lv, state.lv, !!state.door, state.doorT);
 
     var pids = Object.keys(state.players).sort();

@@ -3,7 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const { load } = require('../testlib/load');
 
-function W() { return load(['levels', 'sim']); }
+function W() { return load(['tiles', 'grid', 'levels', 'sim']); }
 const DT = 1 / 60;
 
 function run(S, st, inputs, n) {
@@ -51,7 +51,7 @@ test('중력으로 떨어져 땅에 선다', () => {
   const p = st.players.a;
   assert.strictEqual(p.sup, 1, '땅에 받쳐져 있어야 한다');
   assert.strictEqual(p.vy, 0);
-  assert.strictEqual(L.hits(L.LIST[0], p.x, p.y, false), false, '벽 안에 있으면 안 된다');
+  assert.strictEqual(W().Grid.hits(L.LIST[0], p.x, p.y, {}), false, '벽 안에 있으면 안 된다');
 });
 
 test('가만히 있으면 x 가 안 흐른다', () => {
@@ -276,6 +276,6 @@ test('큰 dt 에도 바닥을 뚫지 않는다', () => {
   let st = S.create(0, ['a']);
   st = S.tick(st, idle(['a']), 2.0);                    // 배경 탭에서 깨어난 프레임
   const p = st.players.a;
-  assert.strictEqual(L.hits(L.LIST[0], p.x, p.y, false), false, '벽 안에 박혔다');
+  assert.strictEqual(W().Grid.hits(L.LIST[0], p.x, p.y, {}), false, '벽 안에 박혔다');
   assert.ok(p.y < L.H + 80, '맵 밖으로 빠졌다');
 });

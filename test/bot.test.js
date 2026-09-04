@@ -3,7 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const { load } = require('../testlib/load');
 
-function W() { return load(['levels', 'sim', 'bot']); }
+function W() { return load(['tiles', 'grid', 'levels', 'sim', 'bot']); }
 const DT = 1 / 60;
 
 /* 봇만으로 판을 끝까지 돌려 본다. 이 파일의 존재 이유가 이 함수다 —
@@ -136,7 +136,7 @@ test('버튼을 밟은 봇은 남이 문을 지날 때까지 안 뜬다', () => 
     st.players.z.x = 300; st.players.z.y = 644;    // 절대 안 움직이는 동료
   }
   assert.strictEqual(st.door, true, '동료가 아직 문 앞인데 버튼에서 내려왔다');
-  assert.ok(L.onButton(L.LIST[2], st.players.bot1.x, st.players.bot1.y),
+  assert.ok(W().Grid.onButton(L.LIST[2], st.players.bot1.x, st.players.bot1.y),
     '버튼 위가 아니다: x=' + st.players.bot1.x.toFixed(0));
 });
 
@@ -151,10 +151,10 @@ test('문이 닫힐 때 문 칸에 있던 사람은 빠져나온다', () => {
   /* 문이 열린 사이 문턱 한가운데 서 있다가 문이 닫힌 상황 */
   st.players.a.x = dcx + 6; st.players.a.y = 644; st.players.a.face = 1;
   st.doorT = 0; st.door = false;
-  assert.ok(L.hits(lv, st.players.a.x, st.players.a.y, false), '시험 전제가 틀렸다');
+  assert.ok(W().Grid.hits(lv, st.players.a.x, st.players.a.y, { door: false, cr: {} }), '시험 전제가 틀렸다');
 
   st = S.tick(st, { a: { x: 1, jseq: 0 } }, DT);
-  assert.ok(!L.hits(lv, st.players.a.x, st.players.a.y, st.door),
+  assert.ok(!W().Grid.hits(lv, st.players.a.x, st.players.a.y, { door: st.door, cr: st.cr }),
     '벽 안에 박힌 채로 남았다: x=' + st.players.a.x.toFixed(1));
 
   /* 빠져나온 뒤에는 정상적으로 걸어야 한다 */

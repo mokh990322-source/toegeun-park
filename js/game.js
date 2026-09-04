@@ -53,7 +53,7 @@
 (function (global) {
   'use strict';
 
-  var Sim = global.Sim, Levels = global.Levels, Snap = global.Snap;
+  var Sim = global.Sim, Levels = global.Levels, Snap = global.Snap, Grid = global.Grid;
   var Interp = global.Interp, Net = global.Net, Room = global.Room;
   var View = global.View, Hud = global.Hud, Sprite = global.Sprite;
   var Bot = global.Bot;
@@ -66,6 +66,8 @@
   var WARN_MS = 3000;           // 이만큼 아무것도 안 오면 띠를 띄운다
   var DT_MAX = 0.1;
   var CLEAR_HOLD_MS = 1500;     // 판을 깬 뒤 "클리어!"를 보여 주는 시간
+  var AI_LEVELS = 3;            // AI 동료가 함께 갈 수 있는 판 수 (bot.js 경로가 여기까지다)
+  var RESTART_GAP = 1000;       // 다시 하기를 이보다 자주 누르면 무시한다
 
   /* ---------- 나 ---------- */
   var pid = null;
@@ -106,7 +108,8 @@
 
   /* ---------- 입력 ---------- */
   var keys = {};
-  var myInput = { x: 0, jseq: 0 };
+  var myInput = { x: 0, jseq: 0, rseq: 0 };
+  var lastRestartMs = 0;
   var sentStr = '';
   var lastSendMs = 0;
 
@@ -271,6 +274,43 @@
     Net.del('rooms/' + code + '/in/' + bpid);
   }
 
+  /* ============================================================
+     막혔을 때
+     ============================================================ */
+
+  /* 다시 하기는 아무나 누른다. 못 나가는 자리에 끼었을 때 호스트를 기다려야
+     하면 그 방은 거기서 끝난다. 대신 연타로 팀을 얼릴 수 없게 간격을 둔다 —
+     호스트도 Sim 쪽에서 멈춤(freeze) 동안은 새 요청을 안 받는다. */
+  function doRestart() {
+    if (!code || !(meta && meta.phase === 'play')) return;
+    var now = Date.now();
+    if (now - lastRestartMs < RESTART_GAP) return;
+    lastRestartMs = now;
+    myInput.rseq++;
+  }
+
+  /* 건너뛰기는 호스트만. 20판 중 하나에 막혀 퇴근을 못 하는 걸 막아 준다.
+     선을 안 탄다 — 어차피 판을 넘기는 건 호스트가 하는 일이다. */
+  function doSkip() {
+    if (!isHost() || !simState) { Hud.toast('호스트만 건너뛸 수 있습니다'); return; }
+    var last = lastLevel();
+    if (simState.lv + 1 >= last) { finish(); return; }
+    simState = Sim.nextLevel(simState, last);
+    clearedAt = 0;
+  }
+
+  /* AI 동료가 한 명이라도 있으면 3판이 끝이다 — 봇 경로가 거기까지라
+     4판부터는 봇이 출입구에 못 온다. 전원 도착 조건이라 판이 안 끝난다. */
+  function lastLevel() {
+    return botList().length ? Math.min(AI_LEVELS, Levels.LIST.length) : Levels.LIST.length;
+  }
+
+  function finish() {
+    if (doneSent) return;
+    doneSent = true;
+    Net.put('rooms/' + code + '/meta/phase', 'result').then(countWrite);
+  }
+
   /* 대기실에서 캐릭터를 바꾼다. Hud 가 이미 잠긴 칸의 클릭을 막지만,
      여기서도 한 번 더 확인한다 — HUD 는 200ms 주기로만 다시 그려서,
      그 틈에 누가 먼저 그 캐릭터를 가져갔으면 화면이 아직 잠긴 것으로
@@ -322,6 +362,13 @@
     if (phase === 'play') Hud.show('Game');
     else if (phase === 'result') Hud.show('Done');
     else if (code) Hud.show('Lobby');
+  }
+
+  /* 화면에 띄울 이름. 봇이든 사람이든 who 에 있는 그대로 쓴다. */
+  function nameOf(p) {
+    if (!p) return '';
+    var wq = who && who[p];
+    return (wq && wq.name) || '';
   }
 
   function aliveList() {
@@ -386,8 +433,11 @@
      보낸다. sim.js 는 이 사정을 몰라야 하므로(네트워크를 모른다), 네트워크
      경계인 여기서 옛 모양 → { x, jseq } 로 바꿔치기한다. */
   function fromWire(v) {
-    if (!v) return { x: 0, jseq: 0 };
-    return { x: v.x || 0, jseq: v.seq || 0 };
+    if (!v) return { x: 0, jseq: 0, rseq: 0 };
+    /* act 칸은 오버워크드 때 "무언가를 했다"였고 규칙이 아무 숫자나 받는다.
+       여기서는 다시 하기를 누른 횟수로 쓴다 — 점프(seq)와 같은 방식이라
+       패킷이 밀려도 안 씹히고, 같은 값이 여러 번 와도 한 번만 처리된다. */
+    return { x: v.x || 0, jseq: v.seq || 0, rseq: v.act || 0 };
   }
 
   function allInputs() {
@@ -462,19 +512,16 @@
     if (!clearedAt) clearedAt = nowMs;
     if (nowMs - clearedAt < CLEAR_HOLD_MS) return;
 
-    if (simState.lv + 1 >= Levels.LIST.length) {
+    if (simState.lv + 1 >= lastLevel()) {
       /* 마지막 판까지 다 깼다 — 모두를 완주 화면으로 보낸다.
          phase 값은 rooms/<code>/meta/phase 에 걸린 옛 규칙이 정한 몇 가지
          값만 받아 준다('lobby','play','result', ... — 'done' 은 401 로
          튕긴다). 오버워크드 시절 결과 화면 phase 인 'result' 를 그대로
          빌려 쓴다. 쓰기 왕복이 끝나기 전까지 phase 가 아직 'play' 라 매 틱
          다시 걸릴 수 있으니 doneSent 로 한 번만 쓴다. */
-      if (!doneSent) {
-        doneSent = true;
-        Net.put('rooms/' + code + '/meta/phase', 'result').then(countWrite);
-      }
+      finish();
     } else {
-      simState = Sim.nextLevel(simState);
+      simState = Sim.nextLevel(simState, lastLevel());
       clearedAt = 0;
     }
   }
@@ -573,12 +620,13 @@
       lp.sup = 0;
     }
 
-    var rx = Levels.moveX(lv, lp.x, lp.y, lp.vx * dt, doorOpen);
+    var env = { door: doorOpen, cr: (drawState && drawState.cr) || null };
+    var rx = Grid.moveX(lv, lp.x, lp.y, lp.vx * dt, env);
     lp.x = rx.x;
     if (rx.hit) lp.vx = 0;
 
     var wasFalling = lp.vy > 0;
-    var ry = Levels.moveY(lv, lp.x, lp.y, lp.vy * dt, doorOpen);
+    var ry = Grid.moveY(lv, lp.x, lp.y, lp.vy * dt, env);
     lp.y = ry.y;
     lp.sup = 0;
     if (ry.hit) {
@@ -601,8 +649,19 @@
                    face: srv.face, sup: srv.sup, coy: 0, buf: 0, jseq: myInput.jseq };
     }
 
-    if (srv.sup === 2) {
-      /* 4.4 규칙: 남을 밟고 있으면 예측을 끈다. jseq 도 지금 값으로 맞춰
+    /* 라운드가 막 다시 시작돼 다들 멈춰 있는 동안은 예측도 멈춘다.
+       안 그러면 나만 혼자 걸어 나가다가 멈춤이 풀리는 순간 시작점으로 튄다. */
+    if (drawState.freeze > 0) {
+      localPos.x = srv.x; localPos.y = srv.y;
+      localPos.vx = 0; localPos.vy = 0; localPos.sup = srv.sup;
+      localPos.coy = 0; localPos.buf = 0; localPos.jseq = myInput.jseq;
+      return;
+    }
+
+    if (srv.sup >= 2) {
+      /* 4.4 규칙: 남을 밟고 있거나(2) 움직이는 발판에 타고 있으면(3) 예측을 끈다.
+         발판 위치 자체는 rt 로 정해져서 예측할 수 있지만, 그 위의 나를 옮기는
+         일은 호스트가 하고 있다 — 내가 또 옮기면 두 번 옮겨진다. jseq 도 지금 값으로 맞춰
          둔다 — 그래야 내려온 뒤 첫 프레임에 "밟고 있는 동안 눌렀던 점프"가
          재생되지 않는다(Sim.adopt 와 같은 이유, 대상만 나 한 명이다). */
       localPos.x = srv.x; localPos.y = srv.y;
@@ -688,8 +747,13 @@
 
     if (drawState) {
       var lv = Levels.LIST[drawState.lv] || Levels.LIST[0];
-      Hud.setLevel(drawState.lv + 1, Levels.LIST.length, lv.name);
+      Hud.setLevel(drawState.lv + 1, lastLevel(), lv.name);
       Hud.setCleared(!!drawState.cleared);
+      /* 왜 튕겼는지 안 보여 주면 다들 자기 조작을 의심한다.
+         새 판을 시작할 때도 잠깐 멈추지만 그때는 "다시!"가 아니다 —
+         fail 이 있을 때만 띄운다. */
+      Hud.setRetry(drawState.freeze > 0 && !!drawState.fail, nameOf(drawState.fail));
+      Hud.setSkip(isHost());
     }
 
     var quiet = (lastEventAt !== null) && (nowMs - lastEventAt > WARN_MS);
@@ -717,7 +781,7 @@
   }
 
   function sendInput(nowMs) {
-    var s = myInput.x + ',' + myInput.jseq;
+    var s = myInput.x + ',' + myInput.jseq + ',' + myInput.rseq;
     if (s === sentStr) return;
     /* 방향키를 붙잡고 있으면 값이 안 바뀌어 쓰기가 아예 없다. 문제는 좌우를
        빠르게 번갈아 누를 때다 — 초당 60번 바뀔 수 있고, 8명이면 초당 480번이
@@ -728,7 +792,7 @@
     /* 선 위에서는 옛 4칸 모양을 쓴다 — seq 칸에 jseq 를 싣는다.
        (allInputs() 위 fromWire() 머리말 참고) */
     Net.put('rooms/' + code + '/in/' + pid,
-      { x: myInput.x, y: 0, act: 0, seq: myInput.jseq }).then(countWrite);
+      { x: myInput.x, y: 0, act: myInput.rseq, seq: myInput.jseq }).then(countWrite);
   }
 
   function bindKeys() {
@@ -737,6 +801,7 @@
       var t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
       keys[e.code] = true;
+      if (e.code === 'KeyR') doRestart();
       if (isJumpCode(e.code)) {
         /* 점프는 키를 누른 순간 한 번이다. jseq 를 올리면 호스트가 늘어난
            만큼 처리한다 — 패킷이 밀려도 연타가 씹히지 않는다. */
@@ -816,7 +881,8 @@
     pid = makePid();
 
     Hud.init({ create: doCreate, join: doJoin, start: doStart, lobby: doBackToLobby,
-               pickChar: doPickChar, addBot: doAddBot, removeBot: doRemoveBot });
+               pickChar: doPickChar, addBot: doAddBot, removeBot: doRemoveBot,
+               restart: doRestart, skip: doSkip });
 
     var els = Hud.els();
     try {
@@ -886,6 +952,7 @@
     sim: function () { return simState; },
     bots: function () { return { minds: botMinds, inputs: botIn }; },
     addBot: doAddBot, removeBot: doRemoveBot,
+    restart: doRestart, skip: doSkip, lastLevel: lastLevel,
     buffer: function () { return buf; },
     inputs: function () { return allInputs(); },
     local: function () { return localPos; },

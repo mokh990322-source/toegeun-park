@@ -24,7 +24,8 @@
      'screenStart', 'screenLobby', 'screenGame', 'screenDone', 'btnLobby',
      'roomCode', 'playerCount', 'btnCopyLink', 'whoList', 'charPickLobby', 'btnStart',
      'lvNow', 'lvTotal', 'lvName', 'clearBanner', 'floor', 'actors', 'netWarn',
-     'stat', 'hint', 'btnAddBot', 'btnRemoveBot', 'botCount'].forEach(function (id) { els[id] = $(id); });
+     'stat', 'hint', 'btnAddBot', 'btnRemoveBot', 'botCount',
+     'btnRetry', 'btnSkip', 'retryBanner', 'retryWho'].forEach(function (id) { els[id] = $(id); });
   }
 
   /* ---------- 캐릭터 고르기 (시작 화면) ----------
@@ -229,6 +230,20 @@
     }
   }
 
+  /* 라운드가 다시 시작됐다는 띠. 누구 때문인지도 같이 보여 준다 —
+     "왜 갑자기 처음이지"를 각자 자기 탓으로 넘겨짚으면 팀이 상한다.
+     이름이 없으면(누가 눌렀는지 모르면) 이유는 안 적는다. */
+  function setRetry(show, who) {
+    var e = els.retryBanner;
+    if (!e) return;
+    if (els.retryWho) els.retryWho.textContent = who ? (who + ' 때문에') : '';
+    if (show) e.classList.remove('hidden'); else e.classList.add('hidden');
+  }
+
+  function setSkip(iAmHost) {
+    if (els.btnSkip) els.btnSkip.disabled = !iAmHost;
+  }
+
   /* AI 버튼. 호스트가 아니면 아예 못 누르게 한다 — 손님이 눌러도 아무 일도
      안 일어나는 버튼을 살아 있는 것처럼 보여 주면 고장으로 읽힌다. */
   function setBotButtons(iAmHost, nBots, full) {
@@ -294,6 +309,8 @@
     if (els.btnLobby) els.btnLobby.onclick = function () { if (on.lobby) on.lobby(); };
     if (els.btnAddBot) els.btnAddBot.onclick = function () { if (on.addBot) on.addBot(); };
     if (els.btnRemoveBot) els.btnRemoveBot.onclick = function () { if (on.removeBot) on.removeBot(); };
+    if (els.btnRetry) els.btnRetry.onclick = function () { if (on.restart) on.restart(); };
+    if (els.btnSkip) els.btnSkip.onclick = function () { if (on.skip) on.skip(); };
 
     if (els.roomInput) {
       els.roomInput.oninput = function () {
@@ -340,6 +357,8 @@
     setCount: setCount,
     setWho: setWho,
     setBotButtons: setBotButtons,
+    setRetry: setRetry,
+    setSkip: setSkip,
     setLevel: setLevel,
     setCleared: setCleared,
     setStat: setStat,

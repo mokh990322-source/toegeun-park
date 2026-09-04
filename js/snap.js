@@ -25,6 +25,13 @@
    화면 보간의 기준이면서, 호스트가 살아 있는지 판단하는 근거이기도 하다.
    이 값이 3초간 안 늘면 호스트가 죽은 것으로 본다.
 
+   ── rt·멈춤·부서진 발판도 실어야 한다 ────────────────────
+   시계 장치(움직이는 발판, 깜빡이는 가시)는 rt 로 정해진다. rt 만 실으면
+   발판 위치를 한 바이트도 안 보내고 모두의 화면이 같아진다 — 이 설계의
+   제일 큰 이득이라 rt 는 절대 빼면 안 된다.
+   부서진 발판(cr)은 반대다. 밟아야 생기는 것이라 시각만으로는 못 만든다.
+   칸번호와 남은시간을 납작한 배열로 싣는다.
+
    ── d(문 남은 시간)도 반드시 싣는다 ──────────────────────
    버튼을 뗀 뒤에도 문이 잠깐 열려 있는 시간(Sim.doorT)은 호스트 시뮬레이션
    안에만 있는 값이다. 안 실으면 승계 전까지 게스트 화면은 카운트다운을
@@ -50,11 +57,22 @@
         q.done ? 1 : 0
       ];
     }
+    /* 부서지는 발판: [칸번호, 0.1초단위 남은시간, ...] 로 납작하게.
+       양수는 금이 간 채 버티는 중, 음수는 무너져서 복구를 기다리는 중이다. */
+    var b = [];
+    for (k in state.cr) {
+      if (!Object.prototype.hasOwnProperty.call(state.cr, k)) continue;
+      b.push(k | 0, Math.round(state.cr[k] * 10));
+    }
     return {
       t: Math.round(state.t * 10),        // 0.1초 단위 틱. 정수라 짧다.
+      r: Math.round((state.rt || 0) * 10),      // 라운드 시각 — 시계 장치가 여기 걸려 있다
       l: state.lv | 0,
       o: state.door ? 1 : 0,
       d: Math.round((state.doorT || 0) * 10),   // 문이 닫히기까지 남은 0.1초 단위 시간
+      z: Math.round((state.freeze || 0) * 10),  // 재시작 직후 멈춤
+      w: state.fail || '',                      // 누구 때문에 다시 하는지 (연출용)
+      b: b,
       c: state.cleared ? 1 : 0,
       p: p
     };
@@ -63,15 +81,24 @@
   /* 네트워크에서 온 것은 무엇이든 들어올 수 있다. 절대 예외를 던지지 않는다 —
      받는 쪽에서 던지면 그 사람의 화면이 그 자리에서 멈춘다. */
   function unpack(packed, spawnIdx) {
-    var out = { t: 0, lv: 0, players: {}, door: false, doorT: 0, cleared: false,
+    var out = { t: 0, rt: 0, lv: 0, players: {}, door: false, doorT: 0,
+                cr: {}, freeze: 0, fail: '', cleared: false,
                 spawnIdx: spawnIdx || {} };
     if (!packed || typeof packed !== 'object') return out;
 
     out.t = (packed.t || 0) / 10;
+    out.rt = (packed.r | 0) / 10;
     out.lv = packed.l | 0;
     out.door = !!packed.o;
     out.doorT = (packed.d | 0) / 10;
+    out.freeze = (packed.z | 0) / 10;
+    out.fail = typeof packed.w === 'string' ? packed.w : '';
     out.cleared = !!packed.c;
+
+    var b = packed.b;
+    if (b && b.length) {
+      for (var bi = 0; bi + 1 < b.length; bi += 2) out.cr[b[bi] | 0] = (b[bi + 1] | 0) / 10;
+    }
 
     var p = packed.p, k;
     if (p && typeof p === 'object') {
@@ -85,8 +112,9 @@
           face: a[4] < 0 ? -1 : 1,
           sup: a[5] | 0,
           done: !!a[6],
-          /* 전송 안 되는 것들 — 이어받은 호스트가 Sim.adopt 로 맞춘다 */
-          coy: 0, buf: 0, jseq: 0
+          /* 전송 안 되는 것들 — 이어받은 호스트가 Sim.adopt 로 맞춘다.
+             rid(어느 움직이는 발판에 탔나)는 sup 이 3 이면 다음 틱에 다시 잡힌다. */
+          coy: 0, buf: 0, jseq: 0, rseq: 0, rid: -1
         };
       }
     }

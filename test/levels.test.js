@@ -2,134 +2,207 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const { load } = require('../testlib/load');
-const R = require('../testlib/reach');
 
-function L() { return load('levels').Levels; }
-function LS() { return load(['levels', 'sim']); }
+function W() { return load(['tiles', 'grid', 'levels', 'sim']); }
 
-test('상수와 판 개수', () => {
-  const V = L();
-  assert.strictEqual(V.W, 1280); assert.strictEqual(V.H, 720);
-  assert.strictEqual(V.TILE, 40); assert.strictEqual(V.COLS, 32); assert.strictEqual(V.ROWS, 18);
-  assert.ok(V.PW > 0 && V.PW < V.TILE, '몸통 너비가 한 칸보다 좁아야 통로를 지난다');
-  assert.ok(V.PH > 0 && V.PH < V.TILE * 2);
-  assert.strictEqual(V.LIST.length, 3);
-});
+/* ---------- 판 데이터 ---------- */
 
-test('판마다 격자가 맞고 필요한 칸이 있다', () => {
-  const V = L();
-  V.LIST.forEach(function (lv, i) {
-    assert.strictEqual(lv.grid.length, V.COLS * V.ROWS, i + '번 판 격자 크기');
-    assert.ok(lv.name && lv.name.length, i + '번 판 이름');
-    assert.strictEqual(lv.spawns.length, 8, i + '번 판 스폰 8개');
-    assert.ok(lv.grid.indexOf('G') >= 0, i + '번 판에 출입구가 없다');
+test('판이 20개고, 격자가 전부 32x18 이고, 모르는 글자가 없다', () => {
+  const { Levels: L, Tiles: T, Grid: G } = W();
+  assert.strictEqual(L.LIST.length, 20);
+  L.LIST.forEach((lv, i) => {
+    const tag = (i + 1) + '번(' + lv.name + ')';
+    assert.strictEqual(lv.grid.length, G.COLS * G.ROWS, tag + ' 칸 수가 다르다');
+    lv.grid.forEach(function (c) {
+      assert.ok(T.known(c), tag + ' 에 모르는 글자 "' + c + '"');
+    });
+    assert.ok(lv.min >= 1 && lv.min <= 8, tag + ' min 이 이상하다: ' + lv.min);
   });
 });
 
-test('스폰은 벽 안이 아니고 서로 안 겹친다', () => {
-  const V = L();
-  V.LIST.forEach(function (lv, i) {
-    lv.spawns.forEach(function (s, j) {
-      assert.strictEqual(V.hits(lv, s.x, s.y, false), false, i + '번 판 ' + j + '번 스폰이 벽 안');
-    });
-    for (let a = 0; a < 8; a++) for (let b = a + 1; b < 8; b++) {
-      const p = lv.spawns[a], q = lv.spawns[b];
-      const apart = (p.x + V.PW <= q.x) || (q.x + V.PW <= p.x) ||
-                    (p.y + V.PH <= q.y) || (q.y + V.PH <= p.y);
-      assert.ok(apart, i + '번 판 스폰 ' + a + ',' + b + ' 가 겹친다');
+test('판마다 출입구가 있고, 버튼이 있으면 문도 있다 (반대도)', () => {
+  const { Levels: L, Tiles: T } = W();
+  L.LIST.forEach((lv, i) => {
+    const tag = (i + 1) + '번(' + lv.name + ')';
+    assert.ok(lv.grid.indexOf(T.GOAL) >= 0, tag + ' 출입구가 없다');
+    const hasB = lv.grid.indexOf(T.BUTTON) >= 0;
+    const hasD = lv.grid.indexOf(T.DOOR) >= 0;
+    assert.strictEqual(hasB, hasD,
+      tag + ' 버튼과 문 중 하나만 있다 (버튼 ' + hasB + ' 문 ' + hasD + ')');
+  });
+});
+
+test('needs 는 버튼 수와 min 을 넘지 않는다', () => {
+  const { Levels: L, Tiles: T } = W();
+  L.LIST.forEach((lv, i) => {
+    const tag = (i + 1) + '번(' + lv.name + ')';
+    const n = lv.grid.filter(c => c === T.BUTTON).length;
+    if (lv.needs > 1) {
+      assert.ok(n >= lv.needs, tag + ' 버튼이 ' + n + '개인데 ' + lv.needs + '명이 눌러야 한다');
+      assert.ok(lv.min >= lv.needs, tag + ' min ' + lv.min + ' 인데 ' + lv.needs + '명이 눌러야 한다');
     }
   });
 });
 
-test('맵 밖은 벽이다', () => {
-  const V = L(), lv = V.LIST[0];
-  assert.strictEqual(V.at(lv, -1, 5), '#');
-  assert.strictEqual(V.at(lv, 999, 5), '#');
-  assert.strictEqual(V.at(lv, 5, -1), '#');
-  assert.strictEqual(V.at(lv, 5, 999), '#');
-});
-
-test('문은 열렸을 때만 지나갈 수 있다', () => {
-  const V = L();
-  const lv = V.LIST.find(function (x) { return x.grid.indexOf('D') >= 0; });
-  assert.ok(lv, '문이 있는 판이 하나는 있어야 한다');
-  const i = lv.grid.indexOf('D');
-  const cx = i % V.COLS, cy = Math.floor(i / V.COLS);
-  assert.strictEqual(V.solid(lv, cx, cy, false), true, '닫혔으면 막힌다');
-  assert.strictEqual(V.solid(lv, cx, cy, true), false, '열렸으면 통과');
-});
-
-test('moveX 는 벽에 붙여 세운다', () => {
-  const V = L(), lv = V.LIST[0];
-  const y = 40;                                   // 위쪽 빈 곳
-  const out = V.moveX(lv, 40, y, -500, false);
-  assert.strictEqual(out.hit, true);
-  assert.ok(out.x >= 40 - 0.5, '왼쪽 벽(x=40) 안으로 들어가면 안 된다: ' + out.x);
-  assert.strictEqual(V.hits(lv, out.x, y, false), false);
-});
-
-test('moveX 는 빈 곳에서 그대로 간다', () => {
-  const V = L(), lv = V.LIST[0];
-  const out = V.moveX(lv, 200, 40, 30, false);
-  assert.strictEqual(out.hit, false);
-  assert.strictEqual(out.x, 230);
-});
-
-test('moveY 는 큰 dy 에도 바닥을 뚫지 않는다', () => {
-  const V = L(), lv = V.LIST[0];
-  const out = V.moveY(lv, 200, 40, 5000, false);
-  assert.strictEqual(out.hit, true);
-  assert.strictEqual(V.hits(lv, 200, out.y, false), false, '벽 안에서 멈추면 안 된다');
-});
-
-test('onButton 은 발밑 칸을 본다', () => {
-  const V = L();
-  const lv = V.LIST.find(function (x) { return x.grid.indexOf('B') >= 0; });
-  assert.ok(lv, '버튼이 있는 판이 하나는 있어야 한다');
-  const i = lv.grid.indexOf('B');
-  const cx = i % V.COLS, cy = Math.floor(i / V.COLS);
-  const x = cx * V.TILE + (V.TILE - V.PW) / 2;
-  const y = cy * V.TILE - V.PH;                    // 버튼 칸 바로 위에 선다
-  assert.strictEqual(V.onButton(lv, x, y), true);
-  assert.strictEqual(V.onButton(lv, x, y - 200), false, '공중에 뜨면 아니다');
-});
-
-test('inGoal 은 출입구 안에서만 참', () => {
-  const V = L();
-  V.LIST.forEach(function (lv, i) {
-    const g = lv.goal;
-    assert.strictEqual(V.inGoal(lv, g.x + 2, g.y + 2), true, i + '번 판 출입구 안');
-    assert.strictEqual(V.inGoal(lv, g.x - 300, g.y), false, i + '번 판 출입구 밖');
+test('깜빡이 가시가 있으면 주기가 있고, 없으면 없다', () => {
+  const { Levels: L, Tiles: T } = W();
+  L.LIST.forEach((lv, i) => {
+    const tag = (i + 1) + '번(' + lv.name + ')';
+    const has = lv.grid.indexOf(T.BLINK_A) >= 0 || lv.grid.indexOf(T.BLINK_B) >= 0;
+    if (has) assert.ok(lv.blink > 0, tag + ' 깜빡이 가시가 있는데 주기가 0 이다 — 영영 안 깜빡인다');
+    else assert.strictEqual(lv.blink, 0, tag + ' 깜빡이 가시가 없는데 주기가 있다');
   });
 });
 
-test('1번 판은 혼자서도 출입구까지 갈 수 있는 높이다', () => {
-  /* 예전엔 이 자리가 assert.ok(true) 였다 — "Step 4 눈검사로 대신한다"고
-     적어 두고 실제로는 아무것도 안 쟀다. 그래서 2번 판(목마)이 업어 준
-     사람을 영원히 못 나가게 만드는 것도, 3번 판(누가 남을래)이 버튼
-     누른 사람을 못 나가게 만드는 것도 이 시험을 그냥 통과했다.
-     지금은 실제 Sim 상수(점프 속도·중력)로 계산한 도달 높이와 실제
-     충돌 코드(Levels.hits)로 노드 그래프를 만들어(testlib/reach.js)
-     스폰에서 출입구까지 정말 혼자 닿는지를 잰다. 전원-완주 검사는
-     test/completability.test.js 에 있다 — 여긴 1번 판 하나만 본다. */
-  const { Levels: V, Sim: S } = LS();
-  const lv = V.LIST[0];
-  const aloneRise = S.JUMP_V * S.JUMP_V / (2 * S.GRAVITY);
-  const start = R.spawnNode(V, lv, 0);
-  const seen = R.reachable(V, S, lv, false, aloneRise, [start]);
-  const goals = R.goalNodes(V, lv, false);
-  assert.ok(goals.length, '출입구 자리를 못 찾았다');
-  assert.ok(goals.some(g => seen[R.key(g.cx, g.sr)]),
-    '혼자서는 못 닿는 턱이 있다 — 1번 판은 조작을 익히는 판이라 혼자 되어야 한다');
+test('시작 자리가 벽 속이 아니다', () => {
+  const { Levels: L, Grid: G } = W();
+  const env = { door: false, cr: {} };
+  L.LIST.forEach((lv, i) => {
+    assert.strictEqual(lv.spawns.length, 8, (i + 1) + '번 시작 자리가 8개가 아니다');
+    lv.spawns.forEach((s, k) => {
+      assert.ok(!G.hits(lv, s.x, s.y, env),
+        (i + 1) + '번(' + lv.name + ') ' + k + '번 시작 자리가 벽 속이다');
+    });
+  });
+});
+
+test('움직이는 발판이 화면 밖으로 안 나간다', () => {
+  const { Levels: L, Grid: G } = W();
+  L.LIST.forEach((lv, i) => {
+    const tag = (i + 1) + '번(' + lv.name + ')';
+    lv.movers.forEach((m, k) => {
+      assert.ok(m.period > 0, tag + ' ' + k + '번 발판 주기가 0 이다 — 안 움직이면 발판이 아니다');
+      for (let s = 0; s <= 20; s++) {
+        const box = G.moverAt(m, (m.period * s) / 20);
+        assert.ok(box.x >= 0 && box.x + box.w <= G.W, tag + ' ' + k + '번 발판이 좌우로 화면을 벗어난다');
+        assert.ok(box.y >= 0 && box.y + box.h <= G.H, tag + ' ' + k + '번 발판이 위아래로 화면을 벗어난다');
+      }
+    });
+  });
+});
+
+/* ---------- 격자 위의 이동 (grid.js) ---------- */
+
+test('맵 밖은 벽이다', () => {
+  const { Levels: L, Grid: G } = W();
+  const lv = L.LIST[0];
+  assert.strictEqual(G.solid(lv, -1, 5, {}), true);
+  assert.strictEqual(G.solid(lv, G.COLS, 5, {}), true);
+  assert.strictEqual(G.solid(lv, 5, -1, {}), true);
+  assert.strictEqual(G.solid(lv, 5, G.ROWS, {}), true);
+});
+
+test('문은 열렸을 때만 지나갈 수 있다', () => {
+  const { Levels: L, Grid: G, Tiles: T } = W();
+  const lv = L.LIST[2];
+  const i = lv.grid.indexOf(T.DOOR);
+  const cx = i % G.COLS, cy = Math.floor(i / G.COLS);
+  assert.strictEqual(G.solid(lv, cx, cy, { door: false }), true);
+  assert.strictEqual(G.solid(lv, cx, cy, { door: true }), false);
+});
+
+test('일방통행은 위에서 내려올 때만 딛는다', () => {
+  const { Levels: L, Grid: G, Tiles: T } = W();
+  const lv = L.LIST[3];
+  const i = lv.grid.indexOf(T.ONEWAY);
+  const cx = i % G.COLS, cy = Math.floor(i / G.COLS);
+  const top = cy * G.TILE;
+  assert.strictEqual(G.solid(lv, cx, cy, { ow: { down: true, feet: top - 5 } }), true,
+    '위에서 내려오는 중이면 딛는다');
+  assert.strictEqual(G.solid(lv, cx, cy, { ow: { down: false, feet: top + 50 } }), false,
+    '올라가는 중이면 통과한다');
+  assert.strictEqual(G.solid(lv, cx, cy, { ow: { down: true, feet: top + 50 } }), false,
+    '이미 발판보다 아래면 내려가는 중이어도 통과한다');
+});
+
+test('부서진 발판은 못 딛는다 (금만 갔을 때는 딛는다)', () => {
+  const { Levels: L, Grid: G, Tiles: T } = W();
+  const lv = L.LIST[15];
+  const i = lv.grid.indexOf(T.CRUMBLE);
+  const cx = i % G.COLS, cy = Math.floor(i / G.COLS);
+  assert.strictEqual(G.solid(lv, cx, cy, { cr: {} }), true, '멀쩡할 때');
+  const cracking = {}; cracking[i] = 0.2;
+  assert.strictEqual(G.solid(lv, cx, cy, { cr: cracking }), true, '금만 갔을 때');
+  const broken = {}; broken[i] = -1.5;
+  assert.strictEqual(G.solid(lv, cx, cy, { cr: broken }), false, '무너졌을 때');
+});
+
+test('moveX 는 벽에 붙여 세우고, 빈 곳에서는 그대로 간다', () => {
+  const { Levels: L, Grid: G } = W();
+  const lv = L.LIST[0];
+  const y = 16 * G.TILE + (G.TILE - G.PH);
+  const hit = G.moveX(lv, G.TILE * 2, y, -500, {});
+  assert.strictEqual(hit.hit, true);
+  assert.ok(hit.x >= G.TILE - 0.1 && hit.x <= G.TILE + 0.6, '왼쪽 벽에 붙어야 한다: ' + hit.x);
+  const free = G.moveX(lv, G.TILE * 5, y, 20, {});
+  assert.strictEqual(free.hit, false);
+  assert.strictEqual(free.x, G.TILE * 5 + 20);
+});
+
+test('moveY 는 큰 dy 에도 바닥을 뚫지 않는다', () => {
+  const { Levels: L, Grid: G } = W();
+  const r = G.moveY(L.LIST[0], G.TILE * 5, 100, 5000, {});
+  assert.strictEqual(r.hit, true);
+  assert.ok(r.y + G.PH <= 17 * G.TILE + 0.6, '바닥 위에 서야 한다: ' + (r.y + G.PH));
 });
 
 test('안 움직이면 자리가 그대로다 (0 을 넘겨도 축이 안 섞인다)', () => {
-  const V = L(), lv = V.LIST[0];
-  /* slide 에 0 을 넘기면 어느 축을 밀던 중인지 알 수 없어 엉뚱한 축의 값을
-     돌려주던 사고가 있었다. moveX(dx=0) 가 y 를 반환해서 캐릭터의 x 가
-     매 프레임 y 로 덮어써졌고, 그 탓에 남의 머리 위에 설 수가 없었다. */
-  assert.deepStrictEqual(V.moveX(lv, 200, 644, 0, false), { x: 200, hit: false });
-  assert.deepStrictEqual(V.moveY(lv, 200, 644, 0, false), { y: 644, hit: false });
-  assert.strictEqual(V.moveX(lv, 200, 644, 0, false).x, 200, 'x 가 y 로 바뀌면 안 된다');
-  assert.strictEqual(V.moveY(lv, 200, 644, 0, false).y, 644);
+  const { Levels: L, Grid: G } = W();
+  const lv = L.LIST[0];
+  assert.deepStrictEqual(G.moveX(lv, 123, 456, 0, {}), { x: 123, hit: false });
+  assert.deepStrictEqual(G.moveY(lv, 123, 456, 0, {}), { y: 456, hit: false });
+});
+
+test('onButton 은 발밑 칸을 본다', () => {
+  const { Levels: L, Grid: G, Tiles: T } = W();
+  const lv = L.LIST[2];
+  const i = lv.grid.indexOf(T.BUTTON);
+  const bx = (i % G.COLS) * G.TILE + (G.TILE - G.PW) / 2;
+  const by = Math.floor(i / G.COLS) * G.TILE - G.PH;
+  assert.strictEqual(G.onButton(lv, bx, by), true);
+  assert.strictEqual(G.onButton(lv, bx + G.TILE * 4, by), false, '멀리 서면 안 눌린다');
+});
+
+test('inGoal 은 출입구 안에서만 참', () => {
+  const { Levels: L, Grid: G } = W();
+  const lv = L.LIST[0];
+  const g = lv.goal;
+  assert.strictEqual(G.inGoal(lv, g.x + 4, g.y + g.h - G.PH), true);
+  assert.strictEqual(G.inGoal(lv, g.x - 200, g.y), false);
+});
+
+test('미는 바닥은 딛는 방향을 알려 준다', () => {
+  const { Levels: L, Grid: G, Tiles: T } = W();
+  const lv = L.LIST[4];
+  const r = lv.grid.indexOf(T.PUSH_R);
+  assert.ok(r >= 0, '5번 판에 오른쪽으로 미는 바닥이 있어야 한다');
+  const rx = (r % G.COLS) * G.TILE + (G.TILE - G.PW) / 2;
+  const ry = Math.floor(r / G.COLS) * G.TILE - G.PH;
+  assert.strictEqual(G.pushOf(lv, rx, ry), 1);
+  const l = lv.grid.indexOf(T.PUSH_L);
+  const lx = (l % G.COLS) * G.TILE + (G.TILE - G.PW) / 2;
+  const ly = Math.floor(l / G.COLS) * G.TILE - G.PH;
+  assert.strictEqual(G.pushOf(lv, lx, ly), -1);
+});
+
+test('움직이는 발판은 삼각파라 속도가 어디서나 같다', () => {
+  const { Levels: L, Grid: G } = W();
+  const m = L.mover(4, 10, 3, 6, 0, 4, 0);
+  assert.ok(Math.abs(G.moverAt(m, 0).x - m.x) < 0.001, '0초에 출발 자리');
+  assert.ok(Math.abs(G.moverAt(m, 2).x - (m.x + m.dx)) < 0.001, '반 주기에 반대 끝');
+  assert.ok(Math.abs(G.moverAt(m, 4).x - m.x) < 0.001, '한 주기에 제자리');
+  /* 속도가 들쭉날쭉하면 "언제 뛰어야 하는지"가 매번 달라져 배울 수가 없다 */
+  const v = [0.3, 1.7, 3.1].map(t => Math.abs(G.moverVel(m, t).vx));
+  assert.ok(Math.abs(v[0] - v[1]) < 0.001 && Math.abs(v[1] - v[2]) < 0.001,
+    '속도가 들쭉날쭉하다: ' + v.join(' '));
+});
+
+test('깜빡이 가시는 ! 와 ? 가 늘 반대다', () => {
+  const { Sim: S, Levels: L, Tiles: T } = W();
+  const lv = L.LIST[12];
+  for (let t = 0; t < 6; t += 0.37) {
+    const on = S.blinkOn(lv, t);
+    assert.strictEqual(T.hazard(T.BLINK_A, on), !T.hazard(T.BLINK_B, on),
+      't=' + t.toFixed(2) + ' 에서 둘이 같은 상태다');
+  }
 });

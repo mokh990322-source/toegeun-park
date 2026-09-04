@@ -168,6 +168,24 @@ input:focus{border-color:var(--cyan);box-shadow:0 0 14px rgba(60,232,212,.35);}
 
 .ghost.small{min-height:40px;font-size:13px;flex:none;padding:0 16px;}
 
+
+/* 다시 시작 띠 */
+#retryBanner{position:fixed;left:50%;top:26%;transform:translateX(-50%);
+  z-index:60;display:flex;flex-direction:column;align-items:center;gap:6px;
+  padding:14px 30px;border-radius:14px;pointer-events:none;
+  background:rgba(11,7,32,.86);border:3px solid var(--pink);
+  box-shadow:0 0 30px rgba(248,63,168,.55);}
+#retryBanner b{font-family:var(--mono);font-size:34px;letter-spacing:4px;
+  color:var(--pink);text-shadow:0 0 14px rgba(248,63,168,.8);}
+#retryWho{font-family:var(--mono);font-size:14px;color:var(--txt-hi);}
+#retryWho:empty{display:none;}
+
+/* 막혔을 때 버튼 — 화면 아래 구석. 게임을 가리면 안 된다. */
+#stuckBar{position:fixed;right:12px;bottom:12px;z-index:50;display:flex;gap:8px;}
+#stuckBar button{min-height:34px;font-size:12px;padding:0 12px;opacity:.55;}
+#stuckBar button:hover:not(:disabled){opacity:1;}
+#stuckBar button:disabled{opacity:.2;cursor:not-allowed;}
+
 /* ---------- 게임 ---------- */
 #screenGame{display:block;padding:0;background:#000;}
 /* 레터박스: 캔버스를 창 한가운데 겹쳐 놓는다. 두 장이 정확히 같은 자리에
@@ -302,6 +320,19 @@ input:focus{border-color:var(--cyan);box-shadow:0 0 14px rgba(60,232,212,.35);}
   </div>
 </div>
 
+<!-- 라운드가 다시 시작됐다는 띠. 왜 튕겼는지 안 보여 주면
+     다들 자기 조작을 의심한다. -->
+<div id="retryBanner" class="hidden">
+  <b>다시!</b><span id="retryWho"></span>
+</div>
+
+<!-- 막혔을 때 빠져나갈 길. 다시 하기는 아무나(못 나가는 자리에 끼면
+     호스트를 기다려야 하는 게 더 나쁘다), 건너뛰기는 호스트만. -->
+<div id="stuckBar">
+  <button id="btnRetry" class="ghost btnx" type="button" title="R">다시 하기</button>
+  <button id="btnSkip" class="ghost btnx" type="button">이 판 건너뛰기</button>
+</div>
+
 <div id="netWarn" class="hidden"></div>
 
 <!-- 순서를 바꾸면 sim.js 가 Levels 를 못 찾는 식으로 조용히 깨진다.
@@ -309,6 +340,8 @@ input:focus{border-color:var(--cyan);box-shadow:0 0 14px rgba(60,232,212,.35);}
 <script src="js/cloud-config.js"></script>
 <script src="js/net.js"></script>
 <script src="js/room.js"></script>
+<script src="js/tiles.js"></script>
+<script src="js/grid.js"></script>
 <script src="js/levels.js"></script>
 <script src="js/sim.js"></script>
 <script src="js/bot.js"></script>
@@ -316,7 +349,7 @@ input:focus{border-color:var(--cyan);box-shadow:0 0 14px rgba(60,232,212,.35);}
 <script src="js/interp.js"></script>
 <script src="js/sprite.js"></script>
 <script src="js/view.js"></script>
-<script src="js/hud.js?v=park4"></script>
-<script src="js/game.js?v=park4"></script>
+<script src="js/hud.js?v=moco1"></script>
+<script src="js/game.js?v=moco1"></script>
 </body>
 </html>

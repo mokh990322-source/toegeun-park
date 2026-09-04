@@ -3,7 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const { load } = require('../testlib/load');
 
-function W() { return load(['levels', 'sim', 'snap']); }
+function W() { return load(['tiles', 'grid', 'levels', 'sim', 'snap']); }
 const DT = 1 / 60;
 function idle(pids) { const o = {}; pids.forEach(p => { o[p] = { x: 0, jseq: 0 }; }); return o; }
 
