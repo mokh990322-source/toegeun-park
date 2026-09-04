@@ -47,7 +47,7 @@ test('난이도 곡선 — 앞은 혼자서도 되고, 뒤는 사람이 필요�
   /* 새 장치가 나오는 판은 일부러 min 을 낮춘다(혼자 배우게). 그래서 min 이
      계단처럼 오르지는 않는다. 대신 지켜야 하는 건 이 셋이다. */
   assert.strictEqual(L[0].min, 1, '1번은 혼자서도 되어야 한다 — 첫 판에서 사람을 모으라고 하면 안 된다');
-  assert.strictEqual(L[19].min, 3, '마지막 판은 셋이어야 한다');
+  assert.strictEqual(L[L.length - 1].min, 3, '마지막 판은 셋이어야 한다');
 
   const maxMin = Math.max.apply(null, L.map(lv => lv.min));
   assert.strictEqual(maxMin, 3,

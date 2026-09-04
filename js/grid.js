@@ -46,47 +46,51 @@
     return T.solid(lv.grid[cy * COLS + cx], cy, cy * COLS + cx, env || {});
   }
 
-  /* 몸통(왼쪽 위 x,y)이 딱딱한 칸과 겹치는가.
+  /* 상자(왼쪽 위 x,y, 크기 w x h)가 딱딱한 칸과 겹치는가.
+     w,h 를 안 주면 사람 몸통이다 — 열쇠처럼 몸통보다 작은 것도 같은 규칙으로
+     굴려야 "사람은 지나가는데 열쇠는 낀다" 같은 일이 안 생긴다.
      양 끝을 아주 조금 안쪽으로 당겨서 본다 — 정확히 칸 경계에 맞닿았을 때
      옆 칸까지 막힌 것으로 세면 통로에 끼어 못 지나간다. */
-  function hits(lv, x, y, env) {
+  function hits(lv, x, y, env, w, h) {
     var e = 0.001;
-    var x0 = Math.floor((x + e) / TILE), x1 = Math.floor((x + PW - e) / TILE);
-    var y0 = Math.floor((y + e) / TILE), y1 = Math.floor((y + PH - e) / TILE);
+    if (w === undefined) w = PW;
+    if (h === undefined) h = PH;
+    var x0 = Math.floor((x + e) / TILE), x1 = Math.floor((x + w - e) / TILE);
+    var y0 = Math.floor((y + e) / TILE), y1 = Math.floor((y + h - e) / TILE);
     for (var cy = y0; cy <= y1; cy++)
       for (var cx = x0; cx <= x1; cx++)
         if (solid(lv, cx, cy, env)) return true;
     return false;
   }
 
-  function slide(lv, x, y, dx, dy, env) {
+  function slide(lv, x, y, dx, dy, env, w, h) {
     var nx = x + dx, ny = y + dy;
-    if (!hits(lv, nx, ny, env)) return { v: dx ? nx : ny, hit: false };
+    if (!hits(lv, nx, ny, env, w, h)) return { v: dx ? nx : ny, hit: false };
     var lo = 0, hi = 1;
     for (var i = 0; i < 14; i++) {
       var mid = (lo + hi) / 2;
-      if (hits(lv, x + dx * mid, y + dy * mid, env)) hi = mid; else lo = mid;
+      if (hits(lv, x + dx * mid, y + dy * mid, env, w, h)) hi = mid; else lo = mid;
     }
     return { v: dx ? (x + dx * lo) : (y + dy * lo), hit: true };
   }
 
   /* 안 움직이면 여기서 끝낸다. slide 에 0 을 넘기면 어느 축을 밀던 중인지
      알 수 없어 엉뚱한 축의 값을 돌려주게 된다 — 실제로 그 사고가 났었다. */
-  function moveX(lv, x, y, dx, env) {
+  function moveX(lv, x, y, dx, env, w, h) {
     if (!dx) return { x: x, hit: false };
     /* 일방통행 발판은 가로로는 절대 안 막는다 */
     var e2 = withOneway(env, false, 0);
-    var r = slide(lv, x, y, dx, 0, e2);
+    var r = slide(lv, x, y, dx, 0, e2, w, h);
     return { x: r.v, hit: r.hit };
   }
 
-  function moveY(lv, x, y, dy, env) {
+  function moveY(lv, x, y, dy, env, w, h) {
     if (!dy) return { y: y, hit: false };
     /* 내려가는 중이고, 움직이기 전 발바닥이 발판 윗면보다 위였을 때만
        일방통행 발판이 딱딱하다. 한 번의 이동 내내 고정된 판단이라
        이분 탐색 도중에 뒤집히지 않는다. */
-    var e2 = withOneway(env, dy > 0, y + PH);
-    var r = slide(lv, x, y, 0, dy, e2);
+    var e2 = withOneway(env, dy > 0, y + (h === undefined ? PH : h));
+    var r = slide(lv, x, y, 0, dy, e2, w, h);
     return { y: r.v, hit: r.hit };
   }
 
@@ -94,6 +98,26 @@
     var o = { door: false, cr: null, ow: { down: down, feet: feet } };
     if (env) { o.door = !!env.door; o.cr = env.cr || null; }
     return o;
+  }
+
+  /* 상자 두 개가 겹치나 */
+  function overlap(ax, ay, aw, ah, bx, by, bw, bh) {
+    return ax + aw > bx && ax < bx + bw && ay + ah > by && ay < by + bh;
+  }
+
+  /* 상자가 겹쳐 있는 칸 중에 이 글자가 있나. 열쇠가 문에 닿았는지 볼 때 쓴다. */
+  function boxTouches(lv, x, y, w, h, ch) {
+    var e = 0.001;
+    var x0 = Math.floor((x + e) / TILE), x1 = Math.floor((x + w - e) / TILE);
+    var y0 = Math.floor((y + e) / TILE), y1 = Math.floor((y + h - e) / TILE);
+    for (var cy = y0; cy <= y1; cy++) {
+      if (cy < 0 || cy >= ROWS) continue;
+      for (var cx = x0; cx <= x1; cx++) {
+        if (cx < 0 || cx >= COLS) continue;
+        if (lv.grid[cy * COLS + cx] === ch) return true;
+      }
+    }
+    return false;
   }
 
   /* 발밑 한 줄의 칸들. 버튼·미는 바닥·부서지는 발판이 전부 이걸 쓴다 —
@@ -182,6 +206,7 @@
     W: W, H: H, TILE: TILE, COLS: COLS, ROWS: ROWS, PW: PW, PH: PH,
     MOVER_H: MOVER_H,
     at: at, solid: solid, hits: hits, slide: slide,
+    overlap: overlap, boxTouches: boxTouches,
     moveX: moveX, moveY: moveY,
     footTiles: footTiles, onButton: onButton, pushOf: pushOf,
     inHazard: inHazard, inGoal: inGoal,

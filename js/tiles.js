@@ -43,11 +43,14 @@
   var CRUMBLE = 'x';   // 밟으면 잠시 뒤 무너진다
   var PUSH_R  = '>';   // 딛고 서면 오른쪽으로 밀린다
   var PUSH_L  = '<';
+  var KEY     = 'K';   // 열쇠가 놓인 자리. 열쇠 자체는 타일이 아니라 물건이다.
+  var CANNON  = 'O';   // 들어가면 위로 쏘아 올린다
 
   /* 판을 짜다 오타를 내면(예: 소문자 b) 조용히 빈칸이 된다 — 판이 안 깨지는
      이유를 한참 찾게 된다. 아는 글자를 한 곳에 적어 두고 시험이 검사한다. */
   var ALL = EMPTY + WALL + ONEWAY + BUTTON + DOOR + GOAL +
-            SPIKE + BLINK_A + BLINK_B + CRUMBLE + PUSH_R + PUSH_L;
+            SPIKE + BLINK_A + BLINK_B + CRUMBLE + PUSH_R + PUSH_L +
+            KEY + CANNON;
 
   function known(t) { return ALL.indexOf(t) >= 0; }
 
@@ -92,7 +95,7 @@
     TILE: TILE, ALL: ALL,
     EMPTY: EMPTY, WALL: WALL, ONEWAY: ONEWAY, BUTTON: BUTTON, DOOR: DOOR, GOAL: GOAL,
     SPIKE: SPIKE, BLINK_A: BLINK_A, BLINK_B: BLINK_B, CRUMBLE: CRUMBLE,
-    PUSH_R: PUSH_R, PUSH_L: PUSH_L,
+    PUSH_R: PUSH_R, PUSH_L: PUSH_L, KEY: KEY, CANNON: CANNON,
     known: known, solid: solid, hazard: hazard, pushDir: pushDir
   };
 })(window);

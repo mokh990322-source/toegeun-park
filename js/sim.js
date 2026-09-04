@@ -34,9 +34,24 @@
    기억했다가 닿는 순간 쓴다(버퍼). 조작감을 좋게 하는 표준 기법인데,
    지연을 가리는 데도 그대로 쓰인다.
 
-   ── 입력 계열이 둘이다 ──────────────────────────────────
-   jseq(점프)와 rseq(다시 하기). 둘 다 "누른 횟수"로 온다. 패킷이 밀려도
-   안 씹히고, 같은 값이 여러 번 와도 한 번만 처리된다.
+   ── 입력 계열이 셋이다 ──────────────────────────────────
+   jseq(점프), aseq(잡기·던지기), rseq(다시 하기). 셋 다 "누른 횟수"로 온다.
+   패킷이 밀려도 안 씹히고, 같은 값이 여러 번 와도 한 번만 처리된다.
+
+   ── 열쇠 ────────────────────────────────────────────────
+   문을 여는 물건이다. 지고 다니면 느려지고 덜 뛴다 — 그 숫자가 이 게임의
+   전부다. 지고 있으면 점프 도달 높이가 111px 로 떨어져서 세 칸(120px) 턱을
+   혼자 못 오른다. 그래서 위에 있는 사람에게 던져 올려야 하고, 그게 곧
+   협동이 된다. 열쇠가 문에 닿으면 그 라운드 내내 열려 있는다.
+
+   ── 잡기·던지기 ─────────────────────────────────────────
+   단추 하나가 상황에 따라 다르게 동작한다. 들고 있으면 던지고, 아니면
+   가까운 것(열쇠 우선, 없으면 동료)을 잡는다. 단추를 여러 개 만드는 것보다
+   훨씬 낫다 — 여덟 명이 하는 게임에서 외울 조작은 적을수록 좋다.
+
+   ── 대포 ────────────────────────────────────────────────
+   들어가면 위로 쏘아 올린다. 세로로만 쏜다 — 방향까지 글자로 나누면
+   판을 읽을 때 화살표를 하나하나 확인해야 해서, 한 가지로 못 박았다.
    ============================================================ */
 (function (global) {
   'use strict';
@@ -58,15 +73,36 @@
   var FREEZE = 0.8;         // 재시작 직후 멈춰 있는 시간
   var FALL_OUT = 80;        // 바닥에서 이만큼 더 내려가면 떨어진 것
 
+  var KEY_W = 20, KEY_H = 20;
+  var KEY_SPEED = 0.8;      // 열쇠를 지면 느려진다
+  var KEY_JUMP = 0.86;      // 도달 높이 144 -> 106px. 세 칸(120) 턱을 혼자 못 오른다.
+  var SEQ_MOD = 512;        // 잡기·다시하기 카운터가 선 위에서 도는 범위 (아래 참고)
+  var THROW_VX = 220;       // 열쇠를 던지는 힘
+  var THROW_VY = 700;       // 위로 122px — 세 칸 위 동료에게 넘길 수 있다
+  var TOSS_VX = 260;        // 사람을 던지는 힘. 열쇠보다 세다 —
+  var TOSS_VY = 980;        // 위로 240px. 점프(144)로는 절대 못 닿는 자리가 생겨야
+                            // "던져 올린다"가 목마와 다른 장치가 된다.
+  var GRAB_R = 34;          // 이 거리 안이면 잡힌다
+  var CANNON_V = 1050;      // 대포가 쏘아 올리는 속도 (도달 높이 약 275px = 7칸)
+
   var L = null, G = null;
   function deps() { if (!L) { L = global.Levels; G = global.Grid; } }
+
+  /* 카운터가 올라갔나. 그냥 > 로 비교하면 안 된다 — 잡기(aseq)와 다시하기
+     (rseq)는 선 위에서 칸 하나를 나눠 쓰느라 512 에서 한 바퀴 돈다
+     (game.js 의 sendInput 머리말). 나머지 연산으로 재면 그 한 바퀴가
+     "0 번 눌렀다"가 아니라 "한 번 눌렀다"로 제대로 읽힌다. */
+  function bumped(want, have) {
+    return (((want - have) % SEQ_MOD) + SEQ_MOD) % SEQ_MOD !== 0;
+  }
 
   function copyPlayers(src) {
     var o = {}, k;
     for (k in src) if (Object.prototype.hasOwnProperty.call(src, k)) {
       var p = src[k];
       o[k] = { x: p.x, y: p.y, py: p.py, vx: p.vx, vy: p.vy, face: p.face, sup: p.sup,
-               coy: p.coy, buf: p.buf, jseq: p.jseq, rseq: p.rseq, rid: p.rid, done: p.done };
+               coy: p.coy, buf: p.buf, jseq: p.jseq, aseq: p.aseq, rseq: p.rseq,
+               rid: p.rid, hold: p.hold, heldBy: p.heldBy, done: p.done };
     }
     return o;
   }
@@ -77,6 +113,12 @@
     return o;
   }
 
+  /* 열쇠가 없는 판이면 null. 있으면 놓인 자리에서 시작한다. */
+  function newKey(lv) {
+    if (!lv || !lv.key) return null;
+    return { x: lv.key.x, y: lv.key.y, vx: 0, vy: 0, by: '', done: false };
+  }
+
   function spawnOf(lv, i) {
     var s = lv.spawns[i % lv.spawns.length];
     return { x: s.x, y: s.y };
@@ -85,13 +127,15 @@
   function newPlayer(lv, i) {
     var s = spawnOf(lv, i);
     return { x: s.x, y: s.y, py: s.y, vx: 0, vy: 0, face: 1, sup: 0,
-             coy: 0, buf: 0, jseq: 0, rseq: 0, rid: -1, done: false };
+             coy: 0, buf: 0, jseq: 0, aseq: 0, rseq: 0, rid: -1,
+             hold: '', heldBy: '', done: false };
   }
 
   function create(lvIndex, pids) {
     deps();
     var st = { t: 0, rt: 0, lv: lvIndex | 0, players: {}, door: false, doorT: 0,
-               cr: {}, freeze: 0, fail: '', cleared: false, spawnIdx: {} };
+               cr: {}, key: newKey(L.LIST[lvIndex | 0]), freeze: 0, fail: '',
+               cleared: false, spawnIdx: {} };
     var list = pids || [];
     for (var i = 0; i < list.length; i++) {
       st.players[list[i]] = newPlayer(L.LIST[st.lv], i);
@@ -102,7 +146,7 @@
 
   function shell(state, players) {
     return { t: state.t, rt: state.rt, lv: state.lv, players: players,
-             door: state.door, doorT: state.doorT, cr: state.cr,
+             door: state.door, doorT: state.doorT, cr: state.cr, key: state.key,
              freeze: state.freeze, fail: state.fail,
              cleared: state.cleared, spawnIdx: state.spawnIdx };
   }
@@ -139,6 +183,7 @@
     for (k in players) if (Object.prototype.hasOwnProperty.call(players, k)) {
       var inp = inputs && inputs[k];
       players[k].jseq = (inp && inp.jseq) || 0;
+      players[k].aseq = (inp && inp.aseq) || 0;
       players[k].rseq = (inp && inp.rseq) || 0;
     }
     return shell(state, players);
@@ -156,9 +201,10 @@
       var s = spawnOf(lv, state.spawnIdx[k] || 0);
       p.x = s.x; p.y = s.y; p.py = s.y;
       p.vx = 0; p.vy = 0; p.sup = 0; p.coy = 0; p.buf = 0;
-      p.rid = -1; p.done = false;
+      p.rid = -1; p.hold = ''; p.heldBy = ''; p.done = false;
     }
     var out = shell(state, players);
+    out.key = newKey(lv);
     out.rt = 0;
     out.door = false; out.doorT = 0;
     out.cr = {};
@@ -206,13 +252,20 @@
        멈춰 있는 동안에도 걷어야 한다. 안 그러면 멈춤이 풀리는 순간
        그동안 눌린 점프가 한꺼번에 터진다. */
     var wantRestart = '';
+    var acted = {};
     for (i = 0; i < keys.length; i++) {
       pid = keys[i]; p = players[pid];
       inp = (inputs && inputs[pid]) || null;
 
       var wantR = inp ? (inp.rseq || 0) : p.rseq;
-      if (wantR > p.rseq) { if (!wantRestart) wantRestart = pid; }
-      p.rseq = wantR > p.rseq ? wantR : p.rseq;
+      if (bumped(wantR, p.rseq)) { if (!wantRestart) wantRestart = pid; }
+      p.rseq = wantR;
+
+      /* 잡기·던지기는 한 틱에 한 번만 처리한다. 점프처럼 밀린 만큼
+         다 처리하면 잡자마자 던지고 또 잡는 일이 벌어진다. */
+      var wantA = inp ? (inp.aseq || 0) : p.aseq;
+      if (bumped(wantA, p.aseq) && state.freeze <= 0) acted[pid] = true;
+      p.aseq = wantA;
 
       var want = inp ? (inp.jseq || 0) : p.jseq;
       var n = want - p.jseq;
@@ -251,10 +304,16 @@
     /* ---- 3. 입력·중력·타일 충돌 ---- */
     for (i = 0; i < keys.length; i++) {
       pid = keys[i]; p = players[pid];
+      /* 남에게 들려 있으면 자기 물리를 안 돈다. 잡은 사람이 옮겨 준다(8b). */
+      if (p.heldBy && players[p.heldBy] && players[p.heldBy].hold === pid) continue;
+      p.heldBy = '';
       inp = (inputs && inputs[pid]) || null;
       var ix = inp ? (inp.x || 0) : 0;
 
-      p.vx = ix * SPEED;
+      /* 무언가 들고 있으면 느려지고 덜 뛴다. 열쇠를 지고 세 칸 턱을 혼자
+         못 오르게 만드는 숫자라, 이 판의 협동이 여기서 나온다. */
+      var load = p.hold ? KEY_SPEED : 1;
+      p.vx = ix * SPEED * load;
       if (ix) p.face = ix > 0 ? 1 : -1;
 
       /* 미는 바닥은 조작에 더해진다 — 거스를 수는 있되 힘이 든다 */
@@ -272,7 +331,7 @@
       p.buf = Math.max(0, p.buf - dt);
 
       if (p.buf > 0 && p.coy > 0) {
-        p.vy = -JUMP_V;
+        p.vy = -JUMP_V * (p.hold ? KEY_JUMP : 1);
         p.buf = 0; p.coy = 0;
         p.sup = 0; p.rid = -1;
       }
@@ -291,6 +350,22 @@
         if (wasFalling) p.sup = 1;        // 땅에 닿았다
         p.vy = 0;
       }
+    }
+
+    /* ---- 3b. 대포 ----
+       몸통 한가운데가 대포 칸에 들어가면 쏘아 올린다. 가운데로 재는 이유는
+       옆을 스치기만 해도 발사되면 "왜 갑자기 날아갔지"가 되기 때문이다. */
+    for (i = 0; i < keys.length; i++) {
+      p = players[keys[i]];
+      if (p.heldBy) continue;
+      var ccx = Math.floor((p.x + L.PW / 2) / L.TILE);
+      var ccy = Math.floor((p.y + L.PH / 2) / L.TILE);
+      if (G.at(lv, ccx, ccy) !== 'O') continue;
+      /* 대포 칸 한가운데에 세워서 쏜다 — 어디로 날아갈지가 매번 같아야
+         사람이 그걸 보고 판을 푼다. */
+      p.x = ccx * L.TILE + (L.TILE - L.PW) / 2;
+      p.vy = -CANNON_V;
+      p.sup = 0; p.rid = -1; p.coy = 0; p.buf = 0;
     }
 
     /* ---- 4. 움직이는 발판에 올라서기 ----
@@ -359,6 +434,94 @@
       }
     }
 
+    /* ---- 6b. 잡기·던지기 ----
+       단추 하나가 상황에 따라 다르게 동작한다. 들고 있으면 던지고,
+       아니면 가까운 것을 잡는다 — 열쇠가 먼저다(열쇠 옆에 동료가 서 있을 때
+       동료를 집어 드는 건 거의 언제나 실수다). */
+    var key = state.key ? { x: state.key.x, y: state.key.y, vx: state.key.vx,
+                            vy: state.key.vy, by: state.key.by, done: state.key.done } : null;
+
+    for (i = 0; i < keys.length; i++) {
+      pid = keys[i]; p = players[pid];
+      if (!acted[pid] || p.heldBy) continue;
+
+      if (p.hold) {                                   // 던진다
+        if (p.hold === 'K' && key) {
+          key.by = '';
+          key.vx = p.face * THROW_VX + p.vx * 0.5; key.vy = -THROW_VY;
+        } else if (players[p.hold]) {
+          var q2 = players[p.hold];
+          q2.heldBy = '';
+          q2.vx = p.face * TOSS_VX + p.vx * 0.5; q2.vy = -TOSS_VY;
+          q2.sup = 0; q2.coy = 0; q2.buf = 0;
+        }
+        p.hold = '';
+        continue;
+      }
+
+      /* 잡는다 — 열쇠 먼저 */
+      if (key && !key.done && !key.by &&
+          G.overlap(p.x - 6, p.y - 6, L.PW + 12, L.PH + 12, key.x, key.y, KEY_W, KEY_H)) {
+        key.by = pid; p.hold = 'K';
+        continue;
+      }
+      /* 없으면 가장 가까운 동료. 이미 남에게 들려 있거나 무언가 들고 있는
+         사람은 안 잡는다 — 사람 탑을 만들면 풀 방법이 없어진다. */
+      var best = '', bestD = GRAB_R;
+      for (var gi = 0; gi < keys.length; gi++) {
+        var g2 = keys[gi];
+        if (g2 === pid) continue;
+        var q3 = players[g2];
+        if (q3.heldBy || q3.hold) continue;
+        var dx2 = Math.abs((q3.x + L.PW / 2) - (p.x + L.PW / 2));
+        var dy2 = Math.abs((q3.y + L.PH / 2) - (p.y + L.PH / 2));
+        if (dy2 > L.PH * 0.8) continue;
+        if (dx2 < bestD) { bestD = dx2; best = g2; }
+      }
+      if (best) { p.hold = best; players[best].heldBy = pid; }
+    }
+
+    /* ---- 6c. 들고 있는 것을 머리 위로 옮긴다 ---- */
+    for (i = 0; i < keys.length; i++) {
+      pid = keys[i]; p = players[pid];
+      if (!p.hold) continue;
+      if (p.hold === 'K') {
+        if (!key || key.by !== pid) { p.hold = ''; continue; }
+        key.x = p.x + (L.PW - KEY_W) / 2;
+        key.y = p.y - KEY_H - 2;
+        key.vx = 0; key.vy = 0;
+      } else {
+        var q4 = players[p.hold];
+        if (!q4 || q4.heldBy !== pid) { p.hold = ''; continue; }
+        q4.x = p.x; q4.y = p.y - L.PH;
+        q4.vx = 0; q4.vy = 0; q4.sup = 0; q4.rid = -1;
+      }
+    }
+
+    /* ---- 6d. 주인 없는 열쇠는 스스로 떨어진다 ---- */
+    if (key && !key.by && !key.done) {
+      key.vy += GRAVITY * dt;
+      if (key.vy > MAX_FALL) key.vy = MAX_FALL;
+      var kx = G.moveX(lv, key.x, key.y, key.vx * dt, env, KEY_W, KEY_H);
+      key.x = kx.x;
+      if (kx.hit) key.vx = 0;
+      var ky = G.moveY(lv, key.x, key.y, key.vy * dt, env, KEY_W, KEY_H);
+      var kFell = key.vy > 0;
+      key.y = ky.y;
+      if (ky.hit) {
+        key.vy = 0;
+        /* 땅에 닿으면 곧 멈춘다. 안 그러면 던진 열쇠가 화면 끝까지 미끄러진다. */
+        if (kFell) key.vx *= 0.5;
+        if (Math.abs(key.vx) < 8) key.vx = 0;
+      }
+      /* 화면 밖으로 나가면 놓인 자리로 돌아온다. 열쇠가 사라지면 그 판은
+         아무도 못 깨는데, 왜 못 깨는지도 안 보인다. */
+      if (key.y > L.H + FALL_OUT) {
+        var k0 = newKey(lv);
+        key.x = k0.x; key.y = k0.y; key.vx = 0; key.vy = 0;
+      }
+    }
+
     /* ---- 7. 부서지는 발판 ----
        밟은 칸은 금이 가기 시작하고(양수), 다 되면 무너진다(음수).
        음수가 0 에 닿으면 돌아온다. */
@@ -391,9 +554,18 @@
       p = players[keys[i]];
       if (p.sup === 1 && G.onButton(lv, p.x, p.y)) pressed++;
     }
+    /* 열쇠가 문에 닿으면 그 라운드 내내 열려 있는다. 지고 온 것을 다시
+       지키게 만들면 열쇠가 그냥 두 번째 버튼이 될 뿐이다. */
+    if (key && !key.done && G.boxTouches(lv, key.x, key.y, KEY_W, KEY_H, 'D')) {
+      key.done = true; key.by = ''; key.vx = 0; key.vy = 0;
+      for (i = 0; i < keys.length; i++) {
+        if (players[keys[i]].hold === 'K') players[keys[i]].hold = '';
+      }
+    }
+
     var holding = pressed >= (lv.needs || 1);
     var doorT = holding ? DOOR_LINGER : Math.max(0, (state.doorT || 0) - dt);
-    var door = doorT > 0;
+    var door = (key && key.done) || doorT > 0;
 
     /* ---- 9. 닫힌 문에 낀 사람 빼내기 ----
        문이 열린 사이 문 칸에 들어갔다가 그대로 닫히면 몸이 벽 속에 박힌다.
@@ -418,6 +590,11 @@
       var sp = spawnOf(lv, state.spawnIdx[pid] || 0);
       p.x = sp.x; p.y = sp.y; p.py = sp.y;
       p.vx = 0; p.vy = 0; p.sup = 0; p.coy = 0; p.buf = 0; p.rid = -1;
+      /* 들고 있던 것은 놓는다. 열쇠를 지고 떨어진 사람이 시작점에서 열쇠와
+         함께 되살아나면 열쇠를 옮기는 지름길이 된다. */
+      if (p.hold === 'K' && key && key.by === pid) key.by = '';
+      else if (p.hold && players[p.hold]) players[p.hold].heldBy = '';
+      p.hold = ''; p.heldBy = '';
     }
 
     /* ---- 10b. 가시에 닿았거나 누가 다시 하기를 눌렀으면 라운드를 처음부터 ---- */
@@ -443,6 +620,7 @@
     out.door = door;
     out.doorT = doorT;
     out.cr = cr;
+    out.key = key;
     out.freeze = 0;
     out.fail = '';
     out.cleared = all;
@@ -494,6 +672,10 @@
     COYOTE: COYOTE, JUMP_BUF: JUMP_BUF, HEAD_BAND: HEAD_BAND, MAX_JUMPS: MAX_JUMPS,
     DOOR_LINGER: DOOR_LINGER, CRACK: CRACK, REGROW: REGROW,
     CONVEYOR: CONVEYOR, FREEZE: FREEZE, FALL_OUT: FALL_OUT,
+    KEY_W: KEY_W, KEY_H: KEY_H, KEY_SPEED: KEY_SPEED, KEY_JUMP: KEY_JUMP,
+    THROW_VX: THROW_VX, THROW_VY: THROW_VY, TOSS_VX: TOSS_VX, TOSS_VY: TOSS_VY,
+    GRAB_R: GRAB_R, CANNON_V: CANNON_V,
+    SEQ_MOD: SEQ_MOD, bumped: bumped,
     create: create, join: join, leave: leave, adopt: adopt,
     restart: restart, blinkOn: blinkOn,
     tick: tick, nextLevel: nextLevel

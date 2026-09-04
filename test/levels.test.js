@@ -5,11 +5,18 @@ const { load } = require('../testlib/load');
 
 function W() { return load(['tiles', 'grid', 'levels', 'sim']); }
 
+/* 판 번호를 박아 쓰지 않는다. 판을 하나 끼워 넣을 때마다 시험이 우수수
+   깨지면, 시험을 고치는 게 일이 되어 결국 아무도 안 고치게 된다. */
+function withGlyph(L, ch) {
+  for (var i = 0; i < L.LIST.length; i++) if (L.LIST[i].grid.indexOf(ch) >= 0) return L.LIST[i];
+  throw new Error('"' + ch + '" 를 쓰는 판이 하나도 없다');
+}
+
 /* ---------- 판 데이터 ---------- */
 
-test('판이 20개고, 격자가 전부 32x18 이고, 모르는 글자가 없다', () => {
+test('판이 충분히 있고, 격자가 전부 32x18 이고, 모르는 글자가 없다', () => {
   const { Levels: L, Tiles: T, Grid: G } = W();
-  assert.strictEqual(L.LIST.length, 20);
+  assert.ok(L.LIST.length >= 20, '판이 ' + L.LIST.length + '개다 (스물은 넘어야 한다)');
   L.LIST.forEach((lv, i) => {
     const tag = (i + 1) + '번(' + lv.name + ')';
     assert.strictEqual(lv.grid.length, G.COLS * G.ROWS, tag + ' 칸 수가 다르다');
@@ -25,10 +32,12 @@ test('판마다 출입구가 있고, 버튼이 있으면 문도 있다 (반대�
   L.LIST.forEach((lv, i) => {
     const tag = (i + 1) + '번(' + lv.name + ')';
     assert.ok(lv.grid.indexOf(T.GOAL) >= 0, tag + ' 출입구가 없다');
-    const hasB = lv.grid.indexOf(T.BUTTON) >= 0;
+    /* 문은 버튼이나 열쇠 중 하나로 열린다. 여는 수단 없는 문은 아무도 못 여는
+       벽이고, 열 것 없는 버튼·열쇠는 아무 일도 안 하는 장식이다. */
+    const opener = (lv.grid.indexOf(T.BUTTON) >= 0) || !!lv.key;
     const hasD = lv.grid.indexOf(T.DOOR) >= 0;
-    assert.strictEqual(hasB, hasD,
-      tag + ' 버튼과 문 중 하나만 있다 (버튼 ' + hasB + ' 문 ' + hasD + ')');
+    assert.strictEqual(opener, hasD,
+      tag + ' 문과 여는 수단 중 하나만 있다 (여는것 ' + opener + ' 문 ' + hasD + ')');
   });
 });
 
@@ -94,7 +103,7 @@ test('맵 밖은 벽이다', () => {
 
 test('문은 열렸을 때만 지나갈 수 있다', () => {
   const { Levels: L, Grid: G, Tiles: T } = W();
-  const lv = L.LIST[2];
+  const lv = withGlyph(L, T.DOOR);
   const i = lv.grid.indexOf(T.DOOR);
   const cx = i % G.COLS, cy = Math.floor(i / G.COLS);
   assert.strictEqual(G.solid(lv, cx, cy, { door: false }), true);
@@ -103,7 +112,7 @@ test('문은 열렸을 때만 지나갈 수 있다', () => {
 
 test('일방통행은 위에서 내려올 때만 딛는다', () => {
   const { Levels: L, Grid: G, Tiles: T } = W();
-  const lv = L.LIST[3];
+  const lv = withGlyph(L, T.ONEWAY);
   const i = lv.grid.indexOf(T.ONEWAY);
   const cx = i % G.COLS, cy = Math.floor(i / G.COLS);
   const top = cy * G.TILE;
@@ -117,7 +126,7 @@ test('일방통행은 위에서 내려올 때만 딛는다', () => {
 
 test('부서진 발판은 못 딛는다 (금만 갔을 때는 딛는다)', () => {
   const { Levels: L, Grid: G, Tiles: T } = W();
-  const lv = L.LIST[15];
+  const lv = withGlyph(L, T.CRUMBLE);
   const i = lv.grid.indexOf(T.CRUMBLE);
   const cx = i % G.COLS, cy = Math.floor(i / G.COLS);
   assert.strictEqual(G.solid(lv, cx, cy, { cr: {} }), true, '멀쩡할 때');
@@ -155,7 +164,7 @@ test('안 움직이면 자리가 그대로다 (0 을 넘겨도 축이 안 섞인
 
 test('onButton 은 발밑 칸을 본다', () => {
   const { Levels: L, Grid: G, Tiles: T } = W();
-  const lv = L.LIST[2];
+  const lv = withGlyph(L, T.BUTTON);
   const i = lv.grid.indexOf(T.BUTTON);
   const bx = (i % G.COLS) * G.TILE + (G.TILE - G.PW) / 2;
   const by = Math.floor(i / G.COLS) * G.TILE - G.PH;
@@ -173,9 +182,8 @@ test('inGoal 은 출입구 안에서만 참', () => {
 
 test('미는 바닥은 딛는 방향을 알려 준다', () => {
   const { Levels: L, Grid: G, Tiles: T } = W();
-  const lv = L.LIST[4];
+  const lv = withGlyph(L, T.PUSH_R);
   const r = lv.grid.indexOf(T.PUSH_R);
-  assert.ok(r >= 0, '5번 판에 오른쪽으로 미는 바닥이 있어야 한다');
   const rx = (r % G.COLS) * G.TILE + (G.TILE - G.PW) / 2;
   const ry = Math.floor(r / G.COLS) * G.TILE - G.PH;
   assert.strictEqual(G.pushOf(lv, rx, ry), 1);
@@ -199,7 +207,7 @@ test('움직이는 발판은 삼각파라 속도가 어디서나 같다', () => 
 
 test('깜빡이 가시는 ! 와 ? 가 늘 반대다', () => {
   const { Sim: S, Levels: L, Tiles: T } = W();
-  const lv = L.LIST[12];
+  const lv = withGlyph(L, T.BLINK_A);
   for (let t = 0; t < 6; t += 0.37) {
     const on = S.blinkOn(lv, t);
     assert.strictEqual(T.hazard(T.BLINK_A, on), !T.hazard(T.BLINK_B, on),

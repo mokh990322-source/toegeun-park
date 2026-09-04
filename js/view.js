@@ -161,6 +161,20 @@
           fillRR(ctx, x + 1, y + 2, TILE - 2, 7, 3, '#3a2c6e');
           ctx.fillStyle = 'rgba(163,92,255,.5)';
           ctx.fillRect(x + 1, y + 2, TILE - 2, 2);
+        } else if (t === 'O') {
+          /* 대포 — 위로 쏘아 올린다. 입이 위를 보게 그려서 방향을 말한다. */
+          fillRR(ctx, x + 5, y + 8, TILE - 10, TILE - 8, 5, '#3a2050');
+          ctx.strokeStyle = '#f83fa8';
+          ctx.lineWidth = 2;
+          rr(ctx, x + 5, y + 8, TILE - 10, TILE - 8, 5);
+          ctx.stroke();
+          ctx.fillStyle = 'rgba(248,63,168,.75)';
+          ctx.beginPath();
+          ctx.moveTo(x + TILE / 2, y + 3);
+          ctx.lineTo(x + TILE / 2 + 7, y + 13);
+          ctx.lineTo(x + TILE / 2 - 7, y + 13);
+          ctx.closePath();
+          ctx.fill();
         } else if (t === '>' || t === '<') {
           /* 미는 바닥 — 화살표가 흐르는 방향을 말한다 */
           fillRR(ctx, x + 1, y + 1, TILE - 2, TILE - 2, 4, '#1d3350');
@@ -301,6 +315,28 @@
     }
   }
 
+  /* ---------- 열쇠 ----------
+     문을 여는 물건이다. 지고 있으면 든 사람 머리 위에 붙어 다니고, 문에
+     닿았으면(done) 문 자리에서 조용히 빛난다. 자리는 state 가 말한 그대로
+     쓴다 — 여기서 다시 계산하면 호스트와 어긋난 열쇠를 그리게 된다. */
+  function drawKey(ctx, key) {
+    if (!key) return;
+    var w = Sim.KEY_W, h = Sim.KEY_H;
+    ctx.save();
+    ctx.shadowColor = '#ffd93d';
+    ctx.shadowBlur = key.done ? 6 : 14;
+    ctx.globalAlpha = key.done ? 0.45 : 1;
+    fillRR(ctx, key.x, key.y + 5, w, h - 10, 3, '#ffd93d');       // 자루
+    ctx.beginPath();
+    ctx.arc(key.x + 5, key.y + h / 2, 6, 0, Math.PI * 2);          // 고리
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#ffd93d';
+    ctx.stroke();
+    ctx.restore();
+    ctx.fillStyle = '#0b0720';
+    ctx.fillRect(key.x + w - 7, key.y + h / 2, 4, 5);              // 이빨
+  }
+
   /* ---------- 버튼·문 (매 프레임, state.door 그대로) ----------
      doorT: 문이 닫히기까지 남은 시간(초). 숫자는 state 에서 그대로 받는다 —
      여기서 다시 재면(마지막으로 버튼이 언제 떨어졌는지 등) 호스트와 어긋난다.
@@ -409,6 +445,9 @@
     drawMovers(ctx, lv, state.rt || 0);
     drawSpikes(ctx, lv, state.rt || 0);
     drawSwitches(ctx, lv, state.lv, !!state.door, state.doorT);
+    /* 열쇠는 사람보다 먼저 — 든 사람 머리 위에 있어서 사람 뒤로 가려질 일이
+       없고, 던져진 열쇠가 사람 앞을 가리면 누가 어디 있는지 안 보인다. */
+    drawKey(ctx, state.key);
 
     var pids = Object.keys(state.players).sort();
 

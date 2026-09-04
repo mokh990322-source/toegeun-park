@@ -57,6 +57,16 @@
         q.done ? 1 : 0
       ];
     }
+    /* 누가 무엇을 들고 있나 */
+    var hold = null;
+    for (k in state.players) {
+      if (!Object.prototype.hasOwnProperty.call(state.players, k)) continue;
+      if (!state.players[k].hold) continue;
+      if (!hold) hold = {};
+      hold[k] = state.players[k].hold;
+    }
+    if (!hold) hold = 0;
+
     /* 부서지는 발판: [칸번호, 0.1초단위 남은시간, ...] 로 납작하게.
        양수는 금이 간 채 버티는 중, 음수는 무너져서 복구를 기다리는 중이다. */
     var b = [];
@@ -73,6 +83,12 @@
       z: Math.round((state.freeze || 0) * 10),  // 재시작 직후 멈춤
       w: state.fail || '',                      // 누구 때문에 다시 하는지 (연출용)
       b: b,
+      /* 누가 무엇을 들고 있나 { 든사람: 'K' | 들린사람 }. 안 실으면 승계한
+         호스트가 들려 있던 사람을 그 자리에 떨어뜨린다. 비어 있으면 0. */
+      h: hold,
+      /* 열쇠: [x, y, 지고있는사람, 문에닿았나]. 없는 판이면 아예 안 싣는다. */
+      k: state.key ? [Math.round(state.key.x), Math.round(state.key.y),
+                      state.key.by || '', state.key.done ? 1 : 0] : 0,
       c: state.cleared ? 1 : 0,
       p: p
     };
@@ -82,7 +98,7 @@
      받는 쪽에서 던지면 그 사람의 화면이 그 자리에서 멈춘다. */
   function unpack(packed, spawnIdx) {
     var out = { t: 0, rt: 0, lv: 0, players: {}, door: false, doorT: 0,
-                cr: {}, freeze: 0, fail: '', cleared: false,
+                cr: {}, key: null, freeze: 0, fail: '', cleared: false,
                 spawnIdx: spawnIdx || {} };
     if (!packed || typeof packed !== 'object') return out;
 
@@ -100,6 +116,12 @@
       for (var bi = 0; bi + 1 < b.length; bi += 2) out.cr[b[bi] | 0] = (b[bi + 1] | 0) / 10;
     }
 
+    var kk = packed.k;
+    if (kk && kk.length >= 4) {
+      out.key = { x: kk[0] | 0, y: kk[1] | 0, vx: 0, vy: 0,
+                  by: typeof kk[2] === 'string' ? kk[2] : '', done: !!kk[3] };
+    }
+
     var p = packed.p, k;
     if (p && typeof p === 'object') {
       for (k in p) {
@@ -114,10 +136,25 @@
           done: !!a[6],
           /* 전송 안 되는 것들 — 이어받은 호스트가 Sim.adopt 로 맞춘다.
              rid(어느 움직이는 발판에 탔나)는 sup 이 3 이면 다음 틱에 다시 잡힌다. */
-          coy: 0, buf: 0, jseq: 0, rseq: 0, rid: -1
+          coy: 0, buf: 0, jseq: 0, aseq: 0, rseq: 0, rid: -1, hold: '', heldBy: ''
         };
       }
     }
+    /* 들고 있는 것은 반드시 플레이어를 다 푼 다음에 복원한다 —
+       out.players 가 아직 비어 있으면 조용히 아무것도 안 붙는다.
+       (실제로 이 순서를 틀려서 아무도 아무것도 안 들고 있게 됐었다.) */
+    var hh = packed.h;
+    if (hh && typeof hh === 'object') {
+      for (k in hh) {
+        if (!Object.prototype.hasOwnProperty.call(hh, k)) continue;
+        if (!out.players[k]) continue;
+        var what = hh[k];
+        if (typeof what !== 'string' || !what) continue;
+        out.players[k].hold = what;
+        if (what !== 'K' && out.players[what]) out.players[what].heldBy = k;
+      }
+    }
+
     return out;
   }
 

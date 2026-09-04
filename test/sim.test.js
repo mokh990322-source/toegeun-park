@@ -305,7 +305,13 @@ test('떨어져도 라운드는 안 되돌아간다 (그 사람만 시작점으�
 
 test('가시에 닿으면 라운드가 다 같이 처음부터', () => {
   const { Sim: S, Levels: L, Grid: G, Tiles: T } = W();
-  const lvIndex = 5;                       // 6번 가시밭
+  /* 고정 가시가 있는 판을 찾아 쓴다 — 번호를 박으면 판을 하나 끼워 넣을
+     때마다 이 시험이 엉뚱한 판을 보게 된다. */
+  let lvIndex = -1;
+  for (let n = 0; n < L.LIST.length; n++) {
+    if (L.LIST[n].grid.indexOf(T.SPIKE) >= 0) { lvIndex = n; break; }
+  }
+  assert.ok(lvIndex >= 0, '고정 가시를 쓰는 판이 하나도 없다');
   const lv = L.LIST[lvIndex];
   const i = lv.grid.indexOf(T.SPIKE);
   let st = S.create(lvIndex, ['a', 'b']);
@@ -313,7 +319,12 @@ test('가시에 닿으면 라운드가 다 같이 처음부터', () => {
   /* b 를 시작점에서 멀리, 가시 없는 자리에 놓는다. 시작점에 그대로 두면
      되돌아왔는지 아닌지 구분할 수가 없다. (걸어가게 하면 도중에 가시를
      밟아서 그것부터 라운드를 되돌린다 — 그래서 자리를 직접 옮긴다.) */
-  st.players.b.x = 25 * L.TILE + 6;
+  /* b 를 가시 없는 자리로 옮긴다 */
+  for (let c = L.COLS - 3; c > 1; c--) {
+    const bx = c * L.TILE + (L.TILE - L.PW) / 2;
+    if (!W().Grid.inHazard(lv, bx, st.players.b.y, true) &&
+        !W().Grid.inHazard(lv, bx, st.players.b.y, false)) { st.players.b.x = bx; break; }
+  }
   st = run(S, st, idle(['a', 'b']), 40);
   assert.ok(Math.abs(st.players.b.x - bHome.x) > 60, '시험 전제: b 가 시작점에서 떨어져 있어야 한다');
   const rtWas = st.rt;

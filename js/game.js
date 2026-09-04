@@ -108,7 +108,7 @@
 
   /* ---------- 입력 ---------- */
   var keys = {};
-  var myInput = { x: 0, jseq: 0, rseq: 0 };
+  var myInput = { x: 0, jseq: 0, aseq: 0, rseq: 0 };
   var lastRestartMs = 0;
   var sentStr = '';
   var lastSendMs = 0;
@@ -432,12 +432,26 @@
      그래서 선(wire) 위에서는 옛 모양을 그대로 쓰고, seq 칸에 jseq 를 실어
      보낸다. sim.js 는 이 사정을 몰라야 하므로(네트워크를 모른다), 네트워크
      경계인 여기서 옛 모양 → { x, jseq } 로 바꿔치기한다. */
+  /* rooms/<code>/in/<pid> 에는 x, y, act, seq 네 칸뿐이다(게시된 규칙).
+     이동은 x, 점프는 seq 를 쓰고, 남은 act 하나에 잡기와 다시하기 둘을
+     넣어야 한다. y 는 -1~1 만 받아서 카운터로 못 쓴다.
+       act = (잡기 % 512) * 512 + (다시하기 % 512)
+     둘 다 "눌렸나"만 보면 되는 값이라 한 바퀴 돌아도 상관없다 — Sim.bumped
+     가 나머지 연산으로 재서, 511 다음 0 을 "한 번 눌렀다"로 읽는다.
+     점프만 진짜 횟수가 필요한데(연타가 씹히면 안 된다) 그건 seq 를 통째로
+     쓰므로 여기 안 섞는다. */
+  var SEQ_MOD = 512;
+
+  function toWireAct() {
+    return (myInput.aseq % SEQ_MOD) * SEQ_MOD + (myInput.rseq % SEQ_MOD);
+  }
+
   function fromWire(v) {
-    if (!v) return { x: 0, jseq: 0, rseq: 0 };
-    /* act 칸은 오버워크드 때 "무언가를 했다"였고 규칙이 아무 숫자나 받는다.
-       여기서는 다시 하기를 누른 횟수로 쓴다 — 점프(seq)와 같은 방식이라
-       패킷이 밀려도 안 씹히고, 같은 값이 여러 번 와도 한 번만 처리된다. */
-    return { x: v.x || 0, jseq: v.seq || 0, rseq: v.act || 0 };
+    if (!v) return { x: 0, jseq: 0, aseq: 0, rseq: 0 };
+    var act = v.act || 0;
+    return { x: v.x || 0, jseq: v.seq || 0,
+             aseq: Math.floor(act / SEQ_MOD) % SEQ_MOD,
+             rseq: act % SEQ_MOD };
   }
 
   function allInputs() {
@@ -599,13 +613,16 @@
      ============================================================ */
 
   function stepLocalPhysics(lp, ix, jseqWant, dt, lv, doorOpen) {
+    /* 무언가 들고 있으면 느려지고 덜 뛴다 — 호스트와 같은 숫자를 써야
+       예측이 안 어긋난다(sim.js 의 KEY_SPEED / KEY_JUMP). */
+    var load = lp.hold ? Sim.KEY_SPEED : 1;
     var n = jseqWant - lp.jseq;
     if (n < 0) n = 0;
     if (n > Sim.MAX_JUMPS) n = Sim.MAX_JUMPS;
     if (n > 0) lp.buf = Sim.JUMP_BUF;
     lp.jseq += n;
 
-    lp.vx = ix * Sim.SPEED;
+    lp.vx = ix * Sim.SPEED * load;
     if (ix) lp.face = ix > 0 ? 1 : -1;
 
     lp.vy += Sim.GRAVITY * dt;
@@ -615,7 +632,7 @@
     lp.buf = Math.max(0, lp.buf - dt);
 
     if (lp.buf > 0 && lp.coy > 0) {
-      lp.vy = -Sim.JUMP_V;
+      lp.vy = -Sim.JUMP_V * (lp.hold ? Sim.KEY_JUMP : 1);
       lp.buf = 0; lp.coy = 0;
       lp.sup = 0;
     }
@@ -646,7 +663,8 @@
 
     if (!localPos) {
       localPos = { x: srv.x, y: srv.y, vx: srv.vx || 0, vy: srv.vy || 0,
-                   face: srv.face, sup: srv.sup, coy: 0, buf: 0, jseq: myInput.jseq };
+                   face: srv.face, sup: srv.sup, coy: 0, buf: 0, jseq: myInput.jseq,
+                   hold: srv.hold || '' };
     }
 
     /* 라운드가 막 다시 시작돼 다들 멈춰 있는 동안은 예측도 멈춘다.
@@ -669,8 +687,14 @@
       localPos.face = srv.face; localPos.sup = srv.sup;
       localPos.coy = 0; localPos.buf = 0;
       localPos.jseq = myInput.jseq;
+    } else if (srv.heldBy) {
+      /* 남에게 들려 있으면 내 조작은 아무 뜻이 없다 — 든 사람이 옮긴다 */
+      localPos.x = srv.x; localPos.y = srv.y;
+      localPos.vx = 0; localPos.vy = 0;
+      localPos.coy = 0; localPos.buf = 0; localPos.jseq = myInput.jseq;
     } else {
       var lv = Levels.LIST[drawState.lv];
+      localPos.hold = srv.hold || '';
       stepLocalPhysics(localPos, myInput.x || 0, myInput.jseq, dt, lv, !!drawState.door);
 
       var c = Interp.correct(localPos, srv, dt);
@@ -781,7 +805,7 @@
   }
 
   function sendInput(nowMs) {
-    var s = myInput.x + ',' + myInput.jseq + ',' + myInput.rseq;
+    var s = myInput.x + ',' + myInput.jseq + ',' + myInput.aseq + ',' + myInput.rseq;
     if (s === sentStr) return;
     /* 방향키를 붙잡고 있으면 값이 안 바뀌어 쓰기가 아예 없다. 문제는 좌우를
        빠르게 번갈아 누를 때다 — 초당 60번 바뀔 수 있고, 8명이면 초당 480번이
@@ -792,7 +816,7 @@
     /* 선 위에서는 옛 4칸 모양을 쓴다 — seq 칸에 jseq 를 싣는다.
        (allInputs() 위 fromWire() 머리말 참고) */
     Net.put('rooms/' + code + '/in/' + pid,
-      { x: myInput.x, y: 0, act: myInput.rseq, seq: myInput.jseq }).then(countWrite);
+      { x: myInput.x, y: 0, act: toWireAct(), seq: myInput.jseq }).then(countWrite);
   }
 
   function bindKeys() {
@@ -802,6 +826,9 @@
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
       keys[e.code] = true;
       if (e.code === 'KeyR') doRestart();
+      /* 잡기·던지기. 단추 하나가 상황에 따라 다르게 동작한다 —
+         들고 있으면 던지고, 아니면 가까운 것을 잡는다(sim.js 6b). */
+      if (e.code === 'KeyE' || e.code === 'ShiftLeft' || e.code === 'ShiftRight') myInput.aseq++;
       if (isJumpCode(e.code)) {
         /* 점프는 키를 누른 순간 한 번이다. jseq 를 올리면 호스트가 늘어난
            만큼 처리한다 — 패킷이 밀려도 연타가 씹히지 않는다. */

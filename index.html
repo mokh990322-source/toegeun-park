@@ -234,7 +234,7 @@ input:focus{border-color:var(--cyan);box-shadow:0 0 14px rgba(60,232,212,.35);}
     <div id="stat"></div>
   </div>
   <div id="clearBanner" class="hidden"><span>클리어!</span></div>
-  <div id="hint">←→ · A D 이동 &nbsp;·&nbsp; Space / ↑ / W 점프</div>
+  <div id="hint">←→ · A D 이동 &nbsp;·&nbsp; Space 점프 &nbsp;·&nbsp; E 잡기/던지기</div>
 </div>
 
 <!-- 시작 -->
@@ -288,7 +288,7 @@ input:focus{border-color:var(--cyan);box-shadow:0 0 14px rgba(60,232,212,.35);}
       <span class="parrow">→</span>
       <div class="pstep" style="--pc:var(--yellow)"><span class="pdot"></span>누가 남을래</div>
     </div>
-    <p class="controlsHint">←→ / A D 로 이동 &nbsp;·&nbsp; <b>Space</b> / ↑ / W 로 점프</p>
+    <p class="controlsHint">←→ / A D 로 이동 &nbsp;·&nbsp; <b>Space</b> 점프 &nbsp;·&nbsp; <b>E</b> 잡기 / 던지기</p>
 
     <!-- 사람이 모자라도 놀 수 있게. 2번 판(목마)은 최소 두 명이라
          혼자 들어왔으면 여기서 AI 를 하나는 넣어야 한다. -->
@@ -336,20 +336,24 @@ input:focus{border-color:var(--cyan);box-shadow:0 0 14px rgba(60,232,212,.35);}
 <div id="netWarn" class="hidden"></div>
 
 <!-- 순서를 바꾸면 sim.js 가 Levels 를 못 찾는 식으로 조용히 깨진다.
-     game.js 는 반드시 마지막이다. -->
-<script src="js/cloud-config.js"></script>
-<script src="js/net.js"></script>
-<script src="js/room.js"></script>
-<script src="js/tiles.js"></script>
-<script src="js/grid.js"></script>
-<script src="js/levels.js"></script>
-<script src="js/sim.js"></script>
-<script src="js/bot.js"></script>
-<script src="js/snap.js"></script>
-<script src="js/interp.js"></script>
-<script src="js/sprite.js"></script>
-<script src="js/view.js"></script>
-<script src="js/hud.js?v=moco1"></script>
-<script src="js/game.js?v=moco1"></script>
+     game.js 는 반드시 마지막이다.
+
+     ?v= 는 전부 같은 값이어야 한다. 하나만 낡은 채로 캐시되면 그 파일만
+     예전 것이 되어 게임이 통째로 안 뜬다 — 실제로 tiles.js 하나가 캐시에
+     남아 "모르는 글자 K" 로 죽었다. 고칠 때마다 이 값을 같이 올린다. -->
+<script src="js/cloud-config.js?v=moco2"></script>
+<script src="js/net.js?v=moco2"></script>
+<script src="js/room.js?v=moco2"></script>
+<script src="js/tiles.js?v=moco2"></script>
+<script src="js/grid.js?v=moco2"></script>
+<script src="js/levels.js?v=moco2"></script>
+<script src="js/sim.js?v=moco2"></script>
+<script src="js/bot.js?v=moco2"></script>
+<script src="js/snap.js?v=moco2"></script>
+<script src="js/interp.js?v=moco2"></script>
+<script src="js/sprite.js?v=moco2"></script>
+<script src="js/view.js?v=moco2"></script>
+<script src="js/hud.js?v=moco2"></script>
+<script src="js/game.js?v=moco2"></script>
 </body>
 </html>

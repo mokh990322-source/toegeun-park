@@ -70,9 +70,10 @@ function key(x, y) { return Math.round(x / STEP) + ',' + Math.round(y / STEP); }
 /* 진짜 점프 포물선을 그려 착지할 수 있는 자리를 모은다.
    조작은 왼쪽/제자리/오른쪽 셋으로 본다 — 공중에서 방향을 바꾸는 것까지
    세면 경우가 폭발하는데, 그렇게까지 해야 닿는 자리는 판으로서 나쁘다. */
-function jumpLandings(w, lv, x, y, env, out) {
+function jumpLandings(w, lv, x, y, env, out, v0) {
   const G = w.Grid, S = w.Sim;
   const DT = 1 / 60;
+  const up = v0 || S.JUMP_V;
   /* 방향을 언제 트느냐까지 본다. 발판 바로 옆에서는 그대로 밀면 옆구리를
      들이받아서, 다 올라간 다음에 트는 것이 유일한 길이다 — 봇도 그렇게 뛴다.
      이걸 안 보면 목마 같은 판이 "고장났다"로 잘못 보고된다. */
@@ -80,7 +81,7 @@ function jumpLandings(w, lv, x, y, env, out) {
   for (const dir of [-1, 1]) for (const delay of [0, 14, 24]) plans.push([dir, delay]);
 
   for (const [dir, delay] of plans) {
-    let px = x, py = y, vy = -S.JUMP_V;
+    let px = x, py = y, vy = -up;
     for (let f = 0; f < 100; f++) {
       vy += S.GRAVITY * DT;
       if (vy > S.MAX_FALL) vy = S.MAX_FALL;
@@ -160,6 +161,18 @@ function flood(w, lv, seeds, env, extra) {
     const next = [];
     walkNeighbours(w, lv, x, y, env, next);
     jumpLandings(w, lv, x, y, env, next);
+    /* 동료가 던져 주는 판이면 그 힘으로도 뛰어 본다. 사람은 머리 위로
+       들려서 날아가므로 한 몸 높이 위에서 출발한다. */
+    if (lv.toss) jumpLandings(w, lv, x, y - w.Grid.PH, env, next, w.Sim.TOSS_VY);
+    /* 대포 칸 위를 지나면 쏘아 올려진다. 사람은 대포를 딛고 서는 게 아니라
+       걸어 들어가므로, 지나가는 자리에서 발사되는 것으로 본다. */
+    const G2 = w.Grid;
+    const ccx = Math.floor((x + G2.PW / 2) / G2.TILE);
+    const ccy = Math.floor((y + G2.PH / 2) / G2.TILE);
+    if (G2.at(lv, ccx, ccy) === w.Tiles.CANNON) {
+      const shotX = ccx * G2.TILE + (G2.TILE - G2.PW) / 2;
+      jumpLandings(w, lv, shotX, y, env, next, w.Sim.CANNON_V);
+    }
     for (const [nx, ny] of next) push(nx, ny);
   }
   return seen;
@@ -224,14 +237,31 @@ function check(w, lvIndex, players) {
   }
   const hasDoor = lv.grid.indexOf(T.DOOR) >= 0;
   const needs = lv.needs || 1;
-  if (hasDoor && buttons < needs) {
+
+  /* 열쇠가 있는 판은 버튼 대신 열쇠가 문을 연다. 여기서는 "열쇠가 놓인
+     자리에 사람이 닿을 수 있나"까지만 본다 — 그 뒤로 열쇠를 어디까지
+     들고 갈 수 있는지는 던지고 받는 경우의 수가 너무 많아 그물로 못 뜬다.
+     대신 열쇠에 아예 못 닿는 판(= 아무도 못 깨는 판)은 확실히 걸린다. */
+  let keyReachable = false;
+  if (lv.key) {
+    const ky = settle(w, lv, lv.key.x, lv.key.y, empty);
+    for (const [, [x, y]] of closed) {
+      if (Math.abs(x - lv.key.x) < G.TILE * 1.5 && Math.abs(y - (ky === null ? lv.key.y : ky)) < G.TILE * 2) {
+        keyReachable = true; break;
+      }
+    }
+    if (!keyReachable) problems.push('열쇠에 닿을 수 없다');
+  }
+
+  const opens = lv.key ? keyReachable : (buttons >= needs);
+  if (hasDoor && !opens && !lv.key) {
     problems.push('문이 있는데 닿을 수 있는 버튼이 ' + buttons + '개다 (' + needs + '개 필요)');
   }
   if (needs > n) {
     problems.push(needs + '명이 동시에 눌러야 하는데 인원이 ' + n + '명이다');
   }
 
-  const open = (hasDoor && buttons >= needs)
+  const open = (hasDoor && opens)
     ? flood(w, lv, seeds, { door: true, cr: {} }, boosts)
     : closed;
 
