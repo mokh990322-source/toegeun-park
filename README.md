@@ -5,6 +5,14 @@ NAU 모델링팀 2~8인 온라인 협동 게임. 피코파크처럼 옆에서 �
 
 **사람이 모자라면 대기실에서 AI 동료를 넣으면 된다.** 혼자서도 3판을 다 깰 수 있다.
 
+## 주소
+
+https://mokh990322-source.github.io/toegeun-park/
+
+방을 만들면 네 글자 코드가 나온다. **초대 링크 복사**를 눌러 메신저에 붙여 넣으면
+받은 사람은 그대로 눌러서 들어온다(`.../toegeun-park/#ABCD`).
+고친 뒤에는 `깃허브업데이트.bat` 하나로 올라간다.
+
 - 설계: `docs/superpowers/specs/2026-09-02-toegeun-park-design.md`
 - 1단계 계획: `docs/superpowers/plans/2026-09-02-toegeun-park-phase1.md`
 
