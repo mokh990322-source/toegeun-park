@@ -1,5 +1,5 @@
 @echo off
-title 퇴근파크 - 깃허브에 올리기
+title 모코파크 - 깃허브에 올리기
 cd /d "%~dp0"
 set PATH=%PATH%;C:\Program Files\GitHub CLI
 
